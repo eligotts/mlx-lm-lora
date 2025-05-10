@@ -22,7 +22,6 @@ Train Large Language Models localy on Apple Silicon using MLX. Fine-tuning works
   - [GRPO-Training](#GRPO-Training)
   - [Evaluate](#Evaluate)
   - [Generate](#Generate)
-- [Fuse](#Fuse)
 - [Memory Issues](#Memory-Issues)
 
 --
@@ -341,56 +340,6 @@ ignore the prompt and compute loss for just the completion by passing
 `--mask-prompt`. Note this is only supported for `chat` and `completion`
 datasets. For `chat` datasets the final message in the message list is
 considered the completion.
-
----
-
-## Fuse
-
-You can generate a model fused with the low-rank adapters using the
-`mlx_lm_lora.fuse` command. This command also allows you to optionally:
-
-- Upload the fused model to the Hugging Face Hub.
-- Export the fused model to GGUF. Note GGUF support is limited to Mistral,
-  Mixtral, and Llama style models in fp16 precision.
-
-To see supported options run:
-
-```shell
-mlx_lm_lora.fuse --help
-```
-
-To generate the fused model run:
-
-```shell
-mlx_lm_lora.fuse --model <path_to_model>
-```
-
-This will by default load the adapters from `adapters/`, and save the fused
-model in the path `fused_model/`. All of these are configurable.
-
-To upload a fused model, supply the `--upload-repo` and `--hf-path` arguments
-to `mlx_lm_lora.fuse`. The latter is the repo name of the original model, which is
-useful for the sake of attribution and model versioning.
-
-For example, to fuse and upload a model derived from Mistral-7B-v0.1, run:
-
-```shell
-mlx_lm_lora.fuse \
-    --model mistralai/Mistral-7B-v0.1 \
-    --upload-repo mlx-community/my-lora-mistral-7b \
-    --hf-path mistralai/Mistral-7B-v0.1
-```
-
-To export a fused model to GGUF, run:
-
-```shell
-mlx_lm_lora.fuse \
-    --model mistralai/Mistral-7B-v0.1 \
-    --export-gguf
-```
-
-This will save the GGUF model in `fused_model/ggml-model-f16.gguf`. You
-can specify the file name with `--gguf-path`.
 
 ---
 
