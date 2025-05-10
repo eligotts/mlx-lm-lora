@@ -29,8 +29,6 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "mlx_lm_lora.evaluate = mlx_lm_lora.evaluate:main",
-            "mlx_lm_lora.fuse = mlx_lm_lora.fuse:main",
             "mlx_lm_lora.train = mlx_lm_lora.train:main",
         ]
     },
