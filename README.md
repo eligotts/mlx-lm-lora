@@ -25,6 +25,8 @@ Train Large Language Models localy on Apple Silicon using MLX. Fine-tuning works
 - [Fuse](#Fuse)
 - [Memory Issues](#Memory-Issues)
 
+--
+
 ## Run
 
 The main command is `mlx_lm_lora.train`. To see a full list of command-line options run:
@@ -45,6 +47,8 @@ mlx_lm_lora.train --config /path/to/config.yaml
 
 If command-line flags are also used, they will override the corresponding
 values in the config.
+
+---
 
 ### LoRA or Full-Precision
 
@@ -73,7 +77,11 @@ You can specify the output location with `--adapter-path`.
 You can resume fine-tuning with an existing adapter with
 `--resume-adapter-file <path_to_adapters.safetensors>`.
 
+---
+
 ### SFT-Training
+
+---
 
 ### ORPO-Training
 
@@ -126,9 +134,136 @@ Data format (JSONL):
 
 The trainer assigns binary rewards (1.0 chosen, 0.0 rejected) if no explicit rewards provided via `preference_score`.
 
+---
+
 ### DPO-Training
 
+Direct Preference Optimization (DPO) training allows you to fine-tune models using human preference data. To use DPO training, set the training mode to 'dpo':
+
+```shell
+mlx_lm.lora \
+    --model <path_to_model> \
+    --train \
+    --training-mode dpo \
+    --data <path_to_data> \
+    --beta 0.1
+```
+
+The DPO training accepts the following additional parameters:
+
+- `--beta`: Controls the strength of the DPO loss (default: 0.1)
+- `--dpo-loss-type`: Choose between "sigmoid" (default), "hinge", "ipo", or "dpop" loss functions
+- `--delta`: Margin parameter for hinge loss (default: 50.0)
+- `--reference-model-path`: Path to a reference model for DPO training
+
+For DPO training, the data should be in JSONL format with the following structure:
+
+```jsonl
+{"prompt": "User prompt", "chosen": "Preferred response", "rejected": "Less preferred response"}
+```
+
+if the Prompt template accept a system message, you can extend the Dataset with a additional "system" field.
+
+```jsonl
+{"system": "You are a helpfull assistant", "prompt": "User prompt", "chosen": "Preferred response", "rejected": "Less preferred response"}
+```
+
+---
+
 ### GRPO-Training
+#### Overview
+
+Group Relative Policy Optimization (GRPO) is a fine-tuning method that optimizes language models by generating multiple responses per prompt and learning from their relative quality. This approach helps improve response quality through comparative learning.
+
+#### Dataset Format
+
+GRPO requires a dataset in JSONL format (one JSON object per line) with the following structure:
+
+```json
+{"prompt": "Your question or instruction here", "answer": "The expected response"}
+```
+
+Each entry must contain:
+- `prompt`: The input text for the model to respond to
+- `answer`: The target/reference response
+
+Optional fields:
+- `system`: A system message providing context or instructions for the model
+
+Example entries:
+```json
+{"prompt": "Gerald spends $100 a month on baseball supplies. His season is 4 months long. He wants to use the months he's not playing baseball to save up by raking, shoveling, and mowing lawns. He charges $10 for each. How many chores does he need to average a month to save up for his supplies?", "answer": "5"}
+{"prompt": "Ann is cutting fabric to make curtains. She cuts a 4 foot by 6 foot rectangle for the living room, and a 2 foot by 4 foot rectangle for the bedroom. If the bolt of fabric is 16 feet by 12 feet, how much fabric is left in square feet?", "answer": "160"}
+{"prompt": "Arnel had ten boxes of pencils with the same number of pencils in each box. He kept ten pencils and shared the remaining pencils equally with his five friends. If his friends got eight pencils each, how many pencils are in each box?", "answer": "5", "system": "You are a helpful math tutor."}
+```
+
+#### Usage
+
+To fine-tune a model using GRPO:
+
+```shell
+mlx_lm.lora \
+    --model <path_to_model> \
+    --train \
+    --data <path_to_data> \
+    --fine-tune-type grpo \
+    --group-size 4
+```
+
+#### GRPO-Specific Arguments
+
+- `--group-size`: Number of responses generated per prompt (default: 4)
+- `--beta`: KL penalty coefficient for policy optimization (default: 0.1)
+- `--epsilon`: Small constant for numerical stability (default: 1e-4)
+- `--max-completion-length`: Maximum length of generated completions (default: 512)
+- `--reference-model-path`: Path to reference model weights. If not specified, uses the same model
+- `--temperature`: Sampling temperature for generations. Higher values increase randomness (default: 1.0)
+- `--reward-weights`: Optional list of weights for multiple reward functions. Must match number of reward functions. If not specified, all rewards weighted equally with 1.0
+- `--use-chat-template`: Whether to use the model's chat template for formatting prompts (default: False)
+- `--use-prompt`: Whether to use the prompt as part of the input for generation (default: False)
+
+#### Training Process
+
+During GRPO training, the model:
+1. Takes each prompt from the dataset
+2. Generates multiple responses (specified by `--group-size`)
+3. Evaluates these responses against the reference answer
+4. Optimizes the policy based on the relative quality of the responses
+
+#### Resource Considerations
+
+GRPO requires more compute resources than standard LoRA training since it generates multiple responses per prompt. Consider:
+- Reducing batch size
+- Using gradient checkpointing
+- Adjusting `--group-size` to balance between quality and resource usage
+
+If running into memory issues, you can also try:
+- Reducing `--max-completion-length`
+- Using a smaller model for initial experiments
+
+#### Example Command with Full Options
+
+```shell
+mlx_lm.lora \
+    --model <path_to_model> \
+    --train \
+    --data <path_to_data> \
+    --fine-tune-type grpo \
+    --group-size 4 \
+    --beta 0.1 \
+    --epsilon 1e-4 \
+    --max-completion-length 512 \
+    --reference-model-path <optional_path_to_reference_model> \
+    --temperature 1.0 \
+    --reward-weights 1.0 1.0 \
+    --use-chat-template False \
+    --use-prompt False \
+    --batch-size 4 \
+    --learning-rate 1e-5 \
+    --num-epochs 3
+```
+
+---
 
 ### Evaluate
 
@@ -160,6 +295,8 @@ ignore the prompt and compute loss for just the completion by passing
 `--mask-prompt`. Note this is only supported for `chat` and `completion`
 datasets. For `chat` datasets the final message in the message list is
 considered the completion.
+
+---
 
 ## Fuse
 
@@ -208,6 +345,8 @@ mlx_lm_lora.fuse \
 
 This will save the GGUF model in `fused_model/ggml-model-f16.gguf`. You
 can specify the file name with `--gguf-path`.
+
+---
 
 ## Memory Issues
 

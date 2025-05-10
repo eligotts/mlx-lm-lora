@@ -382,6 +382,7 @@ def train_model(
         train_grpo(
             model=model,
             ref_model=reference_model.freeze() if reference_model else None,
+            tokenizer=tokenizer,
             optimizer=opt,
             train_dataset=train_set,
             val_dataset=valid_set,
