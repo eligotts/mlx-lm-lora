@@ -373,7 +373,7 @@ def create_dataset(
     config,
 ):
     mask_prompt = getattr(config, "mask_prompt", False)
-    training_mode = getattr(config, "training_mode", "normal")
+    train_mode = getattr(config, "train_mode", "normal")
 
     text_feature = getattr(config, "text_feature", "text")
     chat_feature = getattr(config, "chat_feature", "messages")
@@ -394,7 +394,7 @@ def create_dataset(
 
     sample = data[0]
 
-    if training_mode == "orpo":
+    if train_mode == "orpo":
         if chosen_feature in sample and rejected_feature in sample:
             return ORPODataset(
                 data=data,
@@ -407,7 +407,7 @@ def create_dataset(
             )
         else:
             raise ValueError("Unsupported data format for ORPO training.")
-    elif training_mode == "dpo":
+    elif train_mode == "dpo":
         if chosen_feature in sample and rejected_feature in sample:
             return DPODataset(
                 data=data,
@@ -419,7 +419,7 @@ def create_dataset(
                 )
         else:
             raise ValueError("Unsupported data format for DPO training.")
-    elif training_mode == "grpo":
+    elif train_mode == "grpo":
         if answer_feature in sample and prompt_feature in sample:
             return GRPODataset(
                 data=data,
@@ -433,7 +433,7 @@ def create_dataset(
             )
         else:
             raise ValueError("Unsupported data format for GRPO training.")
-    elif training_mode == "normal":
+    elif train_mode == "normal":
         if prompt_feature in sample and completion_feature in sample:
             return CompletionsDataset(
                 data, tokenizer, prompt_feature, completion_feature, mask_prompt

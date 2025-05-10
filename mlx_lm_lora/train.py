@@ -45,7 +45,7 @@ yaml_loader.add_implicit_resolver(
 CONFIG_DEFAULTS = {
     "model": "mlx_model",
     "train": False,
-    "fine_tune_type": "lora",
+    "train_type": "lora",
     "optimizer": "adam",
     "optimizer_config": {
         "adam": {},
@@ -109,10 +109,17 @@ def build_parser():
         ),
     )
     parser.add_argument(
-        "--fine-tune-type",
+        "--train-type",
         type=str,
         choices=["lora", "dora", "full"],
         help="Type of fine-tuning to perform: lora, dora, or full.",
+    )
+    parser.add_argument(
+        "--train-mode",
+        type=str,
+        default="normal",
+        choices=["normal", "dpo", "orpo", "grpo"],
+        help="Training mode: normal, dpo, orpo, or grpo, default is normal",
     )
     parser.add_argument(
         "--optimizer",
@@ -257,19 +264,19 @@ def train_model(
             f"but the model only has {len(model.layers)} layers."
         )
 
-    if args.fine_tune_type == "full":
+    if args.train_type == "full":
         for l in model.layers[-max(args.num_layers, 0) :]:
             l.unfreeze()
-    elif args.fine_tune_type in ["lora", "dora"]:
+    elif args.train_type in ["lora", "dora"]:
         # Convert linear layers to lora/dora layers and unfreeze in the process
         linear_to_lora_layers(
             model,
             args.num_layers,
             args.lora_parameters,
-            use_dora=(args.fine_tune_type == "dora"),
+            use_dora=(args.train_type == "dora"),
         )
     else:
-        raise ValueError(f"Received unknown fine-tune-type {args.fine_tune_type}")
+        raise ValueError(f"Received unknown train-type {args.train_type}")
 
     # Resume from weights if provided
     if args.resume_adapter_file is not None:

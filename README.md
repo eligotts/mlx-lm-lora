@@ -91,7 +91,7 @@ Odds Ratio Preference Optimization (ORPO) training fine-tunes models using human
 mlx_lm_lora.train \
  --model <path_to_model> \
  --train \
- --training-mode orpo \
+ --train-mode orpo \
  --data <path_to_data> \
  --beta 0.1
 ```
@@ -144,7 +144,7 @@ Direct Preference Optimization (DPO) training allows you to fine-tune models usi
 mlx_lm.lora \
     --model <path_to_model> \
     --train \
-    --training-mode dpo \
+    --train-mode dpo \
     --data <path_to_data> \
     --beta 0.1
 ```
