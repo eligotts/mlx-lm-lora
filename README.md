@@ -370,3 +370,19 @@ of memory. Here are some tips to reduce memory use should you need to do so:
    backward pass. You can use gradient checkpointing by passing the
    `--grad-checkpoint` flag. Gradient checkpointing will be more helpful for
    larger batch sizes or sequence lengths with smaller or quantized models.
+
+
+---
+
+Citing MLX-LM-LoRA
+
+The MLX-LM-LoRA software suite was developed by Gökdeniz Gülmez. If you find MLX-LM-LoRA useful in your research and wish to cite it, please use the following BibTex entry:
+
+@software{
+  MLX-LM-LoRA,
+  author = {Gökdeniz Gülmez},
+  title = {{MLX-LM-LoRA}: Train LLMs on Apple silicon with MLX and the Hugging Face Hub.},
+  url = {https://github.com/Goekdeniz-Guelmez/mlx-lm-lora},
+  version = {0.1.0},
+  year = {2025},
+}

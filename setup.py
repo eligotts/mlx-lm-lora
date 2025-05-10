@@ -19,7 +19,7 @@ setup(
     readme="README.md",
     author_email="goekdenizguelmez@gmail.com",
     author="Gökdeniz Gülmez",
-    url="https://github.com/Goekdeniz-Guelmez/mlx-lm-lora.git",
+    url="https://github.com/Goekdeniz-Guelmez/mlx-lm-lora",
     license="MIT",
     install_requires=requirements,
     packages=["mlx_lm_lora", "mlx_lm_lora.trainer"],

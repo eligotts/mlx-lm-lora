@@ -1,0 +1,10 @@
+mlx>=0.25.0
+mlx_lm
+numpy
+transformers[sentencepiece]>=4.39.3
+protobuf
+pyyaml
+jinja2
+tqdm
+wandb
+datasets
