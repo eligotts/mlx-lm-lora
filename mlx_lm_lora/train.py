@@ -24,7 +24,7 @@ from .trainer.utils import (
     load_adapters,
     print_trainable_parameters,
 )
-from .utils import load, save_config
+from mlx_lm.utils import load, save_config
 
 yaml_loader = yaml.SafeLoader
 yaml_loader.add_implicit_resolver(
@@ -346,6 +346,7 @@ def train_model(
             reference_model_path=args.reference_model_path,
         )
 
+        print("Loading pretrained reference model")
         if args.reference_model_path:
             reference_model, _ = load(args.reference_model_path)
         else:
@@ -397,6 +398,7 @@ def train_model(
             training_callback=training_callback,
         )
 
+        print("Loading pretrained reference model")
         if args.reference_model_path:
             reference_model, _ = load(args.reference_model_path)
         elif args.beta == 0:
