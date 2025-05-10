@@ -1,2 +1,0 @@
-- Add GRPO, DPO sections in README.md
-- Fix README.md
