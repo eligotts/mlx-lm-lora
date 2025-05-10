@@ -81,6 +81,52 @@ You can resume fine-tuning with an existing adapter with
 
 ### SFT-Training
 
+Supervised Fine-Tuning (SFT) trains a model using pairs of prompts and expected completions. This is the most common form of instruction tuning.
+
+To run SFT:
+
+mlx_lm_lora.train \
+    --model <path_to_model> \
+    --train \
+    --data <path_to_data>
+
+You can set the training type explicitly using --train-type lora, dora, or full. By default, LoRA is used.
+
+Data Format
+
+The data should be in JSONL format with one of the following structures:
+
+Chat-style (preferred for chat models):
+
+{
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "What is the capital of France?"},
+    {"role": "assistant", "content": "Paris."}
+  ]
+}
+
+Prompt-completion style:
+
+{"prompt": "What is the capital of France?", "completion": "Paris."}
+
+You can mix system messages or use multi-turn chat formatting depending on the target model’s capabilities.
+
+Additional Options
+	•	--use-chat-template: Format messages using the model’s chat template (default: False)
+	•	--mask-prompt: Apply loss only on the assistant’s output instead of the full sequence
+	•	--train-type: Choose lora, dora, or full for LoRA, DoRA, or full-weight fine-tuning
+	•	--resume-adapter-file: Resume training from a previously saved adapter
+
+Example with chat template and prompt masking:
+
+mlx_lm_lora.train \
+    --model <path_to_model> \
+    --train \
+    --data <path_to_data> \
+    --use-chat-template True \
+    --mask-prompt
+
 ---
 
 ### ORPO-Training
