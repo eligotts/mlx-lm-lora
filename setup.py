@@ -24,9 +24,7 @@ setup(
     install_requires=requirements,
     packages=["mlx_lm_lora", "mlx_lm_lora.trainer"],
     python_requires=">=3.8",
-    extras_require={
-        "evaluate": ["lm-eval", "tqdm"],
-    },
+    extras_require={},
     entry_points={
         "console_scripts": [
             "mlx_lm_lora.train = mlx_lm_lora.train:main",
