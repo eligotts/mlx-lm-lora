@@ -32,7 +32,7 @@ def grad_checkpoint(layer):
 
 
 @dataclass
-class TrainingArgs:
+class SFTTrainingArgs:
     batch_size: int = field(default=4, metadata={"help": "Minibatch size."})
     iters: int = field(default=100, metadata={"help": "Iterations to train for."})
     val_batches: int = field(

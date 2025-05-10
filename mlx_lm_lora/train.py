@@ -13,7 +13,7 @@ import yaml
 
 from .trainer.callbacks import WandBCallback
 from .trainer.datasets import CacheDataset, load_dataset
-from .trainer.sft_trainer import TrainingArgs, TrainingCallback, evaluate_sft, train_sft
+from .trainer.sft_trainer import SFTTrainingArgs, TrainingCallback, evaluate_sft, train_sft
 from .trainer.orpo_trainer import ORPOTrainingArgs, evaluate_orpo, train_orpo
 from .trainer.dpo_trainer import DPOTrainingArgs, evaluate_dpo, train_dpo
 from .trainer.grpo_trainer import GRPOTrainingArgs, evaluate_grpo, train_grpo
@@ -397,7 +397,7 @@ def train_model(
             reference_model, _ = load(args.model)
 
     elif args.training_mode == "normal":
-        train_sfting_args = TrainingArgs(
+        sft_training_args = SFTTrainingArgs(
             batch_size=args.batch_size,
             iters=args.iters,
             val_batches=args.val_batches,
@@ -411,7 +411,7 @@ def train_model(
 
         train_sft(
             model=model,
-            args=train_sfting_args,
+            args=sft_training_args,
             optimizer=opt,
             train_dataset=CacheDataset(train_set),
             val_dataset=CacheDataset(valid_set),
