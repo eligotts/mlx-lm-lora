@@ -1,0 +1,3 @@
+- Add GRPO, DPO sections in README.md
+- Fix README.md
+- Add the codes Duh
