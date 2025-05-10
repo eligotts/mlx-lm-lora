@@ -1,3 +1,3 @@
 - Add GRPO, DPO sections in README.md
 - Fix README.md
-- Add the codes Duh
+- Remove the Numpy dependency in sft_trainer.py
