@@ -53,6 +53,9 @@ class GRPODataset:
     def __len__(self) -> int:
         return len(self._data)
 
+    def process(self, d):
+        return d
+
 
 class DPODataset:
     """
@@ -212,6 +215,9 @@ class ORPODataset:
 
     def __len__(self):
         return len(self._chosen_data)
+
+    def process(self, d):
+        return d
 
     def __getitem__(self, idx: int):
         return {

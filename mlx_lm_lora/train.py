@@ -440,6 +440,14 @@ def train_model(
             ),
         )
 
+        print("Loading pretrained reference model")
+        if args.reference_model_path:
+            reference_model, _ = load(args.reference_model_path)
+        elif args.beta == 0:
+            reference_model = None
+        else:
+            reference_model, _ = load(args.model)
+
         train_grpo(
             model=model,
             ref_model=reference_model.freeze() if reference_model else None,
@@ -450,14 +458,6 @@ def train_model(
             args=grpo_training_args,
             training_callback=training_callback,
         )
-
-        print("Loading pretrained reference model")
-        if args.reference_model_path:
-            reference_model, _ = load(args.reference_model_path)
-        elif args.beta == 0:
-            reference_model = None
-        else:
-            reference_model, _ = load(args.model)
 
     elif args.train_mode == "normal":
         sft_training_args = SFTTrainingArgs(
