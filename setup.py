@@ -23,7 +23,7 @@ setup(
     license="MIT",
     install_requires=requirements,
     packages=["mlx_lm_lora", "mlx_lm_lora.trainer"],
-    python_requires=">=3.8",
+    python_requires=">=3.8, <3.12",
     extras_require={},
     entry_points={
         "console_scripts": [

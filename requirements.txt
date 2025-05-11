@@ -8,3 +8,4 @@ jinja2
 tqdm
 wandb
 datasets
+setuptools>=68.0
