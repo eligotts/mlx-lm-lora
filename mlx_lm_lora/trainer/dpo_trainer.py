@@ -10,11 +10,11 @@ import numpy as np
 from mlx.nn.utils import average_gradients
 from mlx.utils import tree_flatten
 
-from .sft_trainer import TrainingArgs, TrainingCallback, grad_checkpoint
+from .sft_trainer import SFTTrainingArgs, TrainingCallback, grad_checkpoint
 
 
 @dataclass
-class DPOTrainingArgs(TrainingArgs):
+class DPOTrainingArgs(SFTTrainingArgs):
     beta: float = field(
         default=0.1, metadata={"help": "Temperature parameter for DPO training."}
     )

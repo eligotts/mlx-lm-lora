@@ -185,7 +185,7 @@ def train_sft(
     optimizer,
     train_dataset,
     val_dataset,
-    args: TrainingArgs = TrainingArgs(),
+    args: SFTTrainingArgs = SFTTrainingArgs(),
     loss: callable = default_loss,
     iterate_batches: callable = iterate_batches,
     training_callback: TrainingCallback = None,

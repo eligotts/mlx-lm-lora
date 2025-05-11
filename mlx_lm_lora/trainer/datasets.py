@@ -1,7 +1,7 @@
 import json
 import types
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, Tuple
 
 from transformers import PreTrainedTokenizer
 
@@ -81,7 +81,6 @@ class DPODataset:
             )
             messages.append({"role": "user", "content": d[prompt_key]})
 
-            # Apply template once for each response type
             base_messages = messages.copy()
             chosen_messages = base_messages + [
                 {"role": "assistant", "content": d[chosen_key]}
@@ -98,6 +97,9 @@ class DPODataset:
 
     def __len__(self):
         return len(self._chosen_data)
+
+    def process(self, d):
+        return d
     
 
 class ORPODataset:

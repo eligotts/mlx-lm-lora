@@ -10,7 +10,7 @@ import mlx.nn as nn
 import numpy as np
 from mlx.utils import tree_flatten
 
-from ..models import cache
+from mlx_lm.models import cache
 from mlx_lm.generate import generate_step
 from .grpo_reward_functions import (
     RewardFunctions,
@@ -21,11 +21,11 @@ from .grpo_reward_functions import (
     r1_soft_format_reward_func,
     r1_strict_format_reward_func,
 )
-from .sft_trainer import TrainingArgs, TrainingCallback, average_gradients, grad_checkpoint
+from .sft_trainer import SFTTrainingArgs, TrainingCallback, average_gradients, grad_checkpoint
 
 
 @dataclass
-class GRPOTrainingArgs(TrainingArgs):
+class GRPOTrainingArgs(SFTTrainingArgs):
     group_size: int = field(
         default=4,
         metadata={"help": "Number of responses per prompt."},

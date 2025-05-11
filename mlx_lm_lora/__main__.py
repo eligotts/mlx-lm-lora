@@ -5,12 +5,7 @@ import sys
 
 if __name__ == "__main__":
     subcommands = {
-        "convert",
-        "evaluate",
-        "fuse",
         "train",
-        "manage",
-        "upload",
     }
     if len(sys.argv) < 2:
         raise ValueError(f"CLI requires a subcommand in {subcommands}")

@@ -18,7 +18,7 @@ from .trainer.orpo_trainer import ORPOTrainingArgs, evaluate_orpo, train_orpo
 from .trainer.dpo_trainer import DPOTrainingArgs, evaluate_dpo, train_dpo
 from .trainer.grpo_trainer import GRPOTrainingArgs, evaluate_grpo, train_grpo
 
-from .trainer.utils import (
+from mlx_lm.tuner.utils import (
     build_schedule,
     linear_to_lora_layers,
     load_adapters,
@@ -78,10 +78,19 @@ CONFIG_DEFAULTS = {
     "reward_scaling": 1.0,
 
     # DPO args
-    "beta": 0.1,
     "dpo_loss_type": "sigmoid",
     "delta": 50.0,
     "reference_model_path": None,
+
+    # GRPO args
+    "group_size": 4,
+    "epsilon": 1e-4,
+    "epsilon_high": None,
+    "max_completion_length": 512,
+    "use_chat_template": False,
+    "use_prompt": False,
+    "temperature": 0.8,
+    "reward_weights": None,
 }
 
 
@@ -224,12 +233,6 @@ def build_parser():
 
     # DPO args
     parser.add_argument(
-        "--beta",
-        type=float,
-        help="Temperature parameter for DPO training.",
-        default=0.1,
-    )
-    parser.add_argument(
         "--dpo-loss-type",
         type=str,
         help="DPO loss type: 'sigmoid', 'hinge', 'ipo', or 'dpop'.",
@@ -243,6 +246,56 @@ def build_parser():
         "--reference-model-path",
         type=str,
         help="Path to reference model weights. If None, uses the same model.",
+        default=None,
+    )
+
+    # GRPO args
+    parser.add_argument(
+        "--group-size",
+        type=int,
+        help="Number of generations.",
+        default=4,
+    )
+    parser.add_argument(
+        "--max-completion-length",
+        type=int,
+        help="Maximum length of the prompt. If the prompt is longer than this value, it will be truncated left.",
+        default=512,
+    )
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        help="The Epsilon for numerical stability.",
+        default=1e-4,
+    )
+    parser.add_argument(
+        "--epsilon-high",
+        type=float,
+        help="Upper-bound epsilon value for clipping. If not specified, it defaults to the same value as the lower-bound specified in argument epsilon.",
+        default=None,
+    )
+    parser.add_argument(
+        "--use-chat-template",
+        action="store_true",
+        help="If the model is a Chat model, use the Chat template.",
+        default=None,
+    )
+    parser.add_argument(
+        "--use-prompt",
+        action="store_true",
+        help="Rather to use the prompt from the R1 paper.",
+        default=None,
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        help="Temperature for sampling. The higher the temperature, the more random the completions.",
+        default=1.0,
+    )
+    parser.add_argument(
+        "--reward-weights",
+        type=str,
+        help="Weights for each reward function. Must match the number of reward functions and be in this format [0.1, 0.2, 0.3, 0.4, 0.5]. If not given, all rewards are weighted equally with weight `1.0`.",
         default=None,
     )
     return parser
@@ -306,7 +359,7 @@ def train_model(
 
     opt = opt_class(learning_rate=lr, **optimizer_config)
 
-    if args.training_mode == "orpo":
+    if args.train_mode == "orpo":
         orpo_training_args = ORPOTrainingArgs(
             batch_size=args.batch_size,
             iters=args.iters,
@@ -329,7 +382,7 @@ def train_model(
             args=orpo_training_args,
             training_callback=training_callback,
         )
-    elif args.training_mode == "dpo":
+    elif args.train_mode == "dpo":
         dpo_training_args = DPOTrainingArgs(
             batch_size=args.batch_size,
             iters=args.iters,
@@ -362,7 +415,7 @@ def train_model(
             training_callback=training_callback,
         )
 
-    elif args.training_mode == "grpo":
+    elif args.train_mode == "grpo":
         grpo_training_args = GRPOTrainingArgs(
             batch_size=args.batch_size,
             iters=args.iters,
@@ -406,7 +459,7 @@ def train_model(
         else:
             reference_model, _ = load(args.model)
 
-    elif args.training_mode == "normal":
+    elif args.train_mode == "normal":
         sft_training_args = SFTTrainingArgs(
             batch_size=args.batch_size,
             iters=args.iters,
@@ -433,7 +486,7 @@ def train_model(
 
 
 def evaluate_model(args, model: nn.Module, tokenizer, test_set):
-    if args.training_mode == "orpo":
+    if args.train_mode == "orpo":
         test_loss, test_rewards, _, test_metrics = evaluate_orpo(
             model=model,
             dataset=test_set,
@@ -451,7 +504,7 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
         for metric_name, metric_value in test_metrics.items():
             print(f"  {metric_name}: {float(metric_value):.3f}")
 
-    elif args.training_mode == "dpo":
+    elif args.train_mode == "dpo":
         if args.reference_model_path:
             reference_model, _ = load(args.reference_model_path)
         else:
@@ -476,7 +529,7 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
         for metric_name, metric_value in test_metrics.items():
             print(f"  {metric_name}: {float(metric_value):.3f}")
 
-    elif args.training_mode == "grpo":
+    elif args.train_mode == "grpo":
         if args.reference_model_path:
             reference_model, _ = load(args.reference_model_path)
         else:
@@ -505,7 +558,7 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
             f"Test loss {test_loss:.3f}, Test ppl {test_ppl:.3f}, Rewards: {rewards_str}"
         )
 
-    elif args.training_mode == "normal":
+    elif args.train_mode == "normal":
         test_loss = evaluate_sft(
             model=model,
             dataset=CacheDataset(test_set),
