@@ -6,5 +6,6 @@ protobuf
 pyyaml
 jinja2
 tqdm
+distutils
 wandb
 datasets
