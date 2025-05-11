@@ -1,5 +1,5 @@
-import re
 from typing import Callable, List, Optional
+import re
 
 RewardFunctions = Callable[[List[str], List[str], List[str]], List[float]]
 

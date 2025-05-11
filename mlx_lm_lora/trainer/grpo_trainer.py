@@ -1,14 +1,14 @@
-# Copyright © 2024 Apple Inc.
-
-import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import List, Optional
+from pathlib import Path
+import time
 
+from mlx.utils import tree_flatten
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx.utils import tree_flatten
+
+from .sft_trainer import SFTTrainingArgs, TrainingCallback, average_gradients, grad_checkpoint
 
 from mlx_lm.models import cache
 from mlx_lm.generate import generate_step
@@ -21,7 +21,6 @@ from .grpo_reward_functions import (
     r1_soft_format_reward_func,
     r1_strict_format_reward_func,
 )
-from .sft_trainer import SFTTrainingArgs, TrainingCallback, average_gradients, grad_checkpoint
 
 
 @dataclass

@@ -1,5 +1,3 @@
-# Copyright © 2024 Apple Inc.
-
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path

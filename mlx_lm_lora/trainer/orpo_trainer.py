@@ -1,12 +1,12 @@
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
+import time
 
+from mlx.nn.utils import average_gradients
+from mlx.utils import tree_flatten
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx.nn.utils import average_gradients
-from mlx.utils import tree_flatten
 
 from .sft_trainer import SFTTrainingArgs, TrainingCallback, grad_checkpoint
 

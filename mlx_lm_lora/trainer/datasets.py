@@ -1,17 +1,12 @@
-import json
-import types
-from pathlib import Path
 from typing import Any, Dict, List, Union, Tuple
+from pathlib import Path
+import types
+import json
 
 from transformers import PreTrainedTokenizer
 
 
 class GRPODataset:
-    """
-    Dataset wrapper for GRPO training data.
-    Each example should have a 'prompt' and 'answer' field.
-    Returns data in (prompt_tokens, answer_tokens, prompt_str, answer_str) tuple format.
-    """
     def __init__(
         self,
         data: List[Dict[str, str]],
@@ -58,12 +53,6 @@ class GRPODataset:
 
 
 class DPODataset:
-    """
-    A dataset for DPO (Direct Preference Optimization) training that handles
-    prompt-chosen-rejected triplets in the format:
-    {"system": ..., "prompt": ..., "chosen": ..., "rejected": ...}
-    """
-
     def __init__(
         self,
         data: List[Dict[str, str]],

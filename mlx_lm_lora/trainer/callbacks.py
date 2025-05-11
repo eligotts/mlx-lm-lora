@@ -1,7 +1,4 @@
-try:
-    import wandb
-except ImportError:
-    wandb = None
+import wandb
 
 
 class TrainingCallback:

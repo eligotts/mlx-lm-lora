@@ -1,16 +1,15 @@
-# Copyright © 2024 Apple Inc.
-
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
+import time
 
-import mlx.core as mx
-import mlx.nn as nn
-import numpy as np
 from mlx.nn.utils import average_gradients
 from mlx.utils import tree_flatten
 
 from .sft_trainer import SFTTrainingArgs, TrainingCallback, grad_checkpoint
+
+import mlx.core as mx
+import mlx.nn as nn
+import numpy as np
 
 
 @dataclass
