@@ -1,4 +1,4 @@
-mlx>=0.25.0
+mlx
 mlx_lm
 numpy
 transformers[sentencepiece]>=4.39.3
