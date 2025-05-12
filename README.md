@@ -378,6 +378,7 @@ Citing MLX-LM-LoRA
 
 The MLX-LM-LoRA software suite was developed by Gökdeniz Gülmez. If you find MLX-LM-LoRA useful in your research and wish to cite it, please use the following BibTex entry:
 
+```
 @software{
   MLX-LM-LoRA,
   author = {Gökdeniz Gülmez},
@@ -386,3 +387,4 @@ The MLX-LM-LoRA software suite was developed by Gökdeniz Gülmez. If you find M
   version = {0.1.0},
   year = {2025},
 }
+```
