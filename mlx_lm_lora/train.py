@@ -56,6 +56,7 @@ CONFIG_DEFAULTS = {
     "num_layers": 16,
     "batch_size": 4,
     "iters": 1000,
+    "epoch": None,
     "val_batches": 25,
     "learning_rate": 1e-5,
     "steps_per_report": 10,
@@ -150,6 +151,7 @@ def build_parser():
     )
     parser.add_argument("--batch-size", type=int, help="Minibatch size.")
     parser.add_argument("--iters", type=int, help="Iterations to train for.")
+    parser.add_argument("--epoch", type=int, help="Epochs to train for. Ignored if --iters is provided.")
     parser.add_argument(
         "--val-batches",
         type=int,
@@ -310,6 +312,13 @@ def train_model(
     training_callback: TrainingCallback = None,
 ):
     mx.random.seed(args.seed)
+
+    if args.iters is None and args.epoch is not None:
+        num_samples = len(train_set)
+        batches_per_epoch = math.ceil(num_samples / args.batch_size)
+        args.iters = args.epoch * batches_per_epoch
+        print(f"[INFO] Calculated {args.iters} iterations from {args.epoch} epochs (dataset size: {num_samples}, batch size: {args.batch_size})")
+
     model.freeze()
     if args.num_layers > len(model.layers):
         raise ValueError(
