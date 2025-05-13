@@ -1,5 +1,5 @@
 # mlx-lm-lora
-Train Large Language Models localy on Apple Silicon using MLX. Fine-tuning works with all the model that are supported with MLX-LM, for example:
+Train Large Language Models localy on Apple Silicon using MLX. Training works with all the model that are supported with MLX-LM, for example:
 
 - Llama, 3, 4
 - Phi2, 3
