@@ -1,7 +1,7 @@
 try:
     import wandb
 except ImportError:
-    raise ImportError("wandb is not installed. Please install it manually using `pip install wandb`.")
+    wandb = None
 
 
 class TrainingCallback:
