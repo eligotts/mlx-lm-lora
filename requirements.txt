@@ -6,6 +6,4 @@ protobuf
 pyyaml
 jinja2
 tqdm
-wandb
 datasets
-setuptools
