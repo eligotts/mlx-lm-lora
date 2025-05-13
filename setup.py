@@ -1,7 +1,6 @@
-import sys
 from pathlib import Path
-
 from setuptools import setup
+import sys
 
 package_dir = Path(__file__).parent / "mlx_lm_lora"
 with open("requirements.txt") as fid:
@@ -23,8 +22,7 @@ setup(
     license="MIT",
     install_requires=requirements,
     packages=["mlx_lm_lora", "mlx_lm_lora.trainer"],
-    python_requires=">=3.8, <3.12",
-    extras_require={},
+    python_requires=">=3.8",
     entry_points={
         "console_scripts": [
             "mlx_lm_lora.train = mlx_lm_lora.train:main",
