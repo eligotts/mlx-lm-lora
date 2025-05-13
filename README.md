@@ -14,6 +14,7 @@ Train Large Language Models localy on Apple Silicon using MLX. Fine-tuning works
 
 ## Contents
 
+- [Install](#Install)
 - [Run](#Run)
   - [LoRA or Full-Precision](#Lora-or-Full-Precision)
   - [SFT](#SFT-Training)
@@ -24,7 +25,13 @@ Train Large Language Models localy on Apple Silicon using MLX. Fine-tuning works
   - [Generate](#Generate)
 - [Memory Issues](#Memory-Issues)
 
---
+---
+
+## Install
+
+```shell
+pip install mlx-lm-lora
+```
 
 ## Run
 
