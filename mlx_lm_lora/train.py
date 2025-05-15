@@ -13,6 +13,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from mlx_lm.tuner.callbacks import WandBCallback
+from mlx_optimizers import Muon, QHAdam
 
 from .trainer.sft_trainer import SFTTrainingArgs, TrainingCallback, evaluate_sft, train_sft
 from .trainer.grpo_trainer import GRPOTrainingArgs, evaluate_grpo, train_grpo
@@ -136,7 +137,7 @@ def build_parser():
     parser.add_argument(
         "--optimizer",
         type=str,
-        choices=["adam", "adamw"],
+        choices=["adam", "adamw", "qhadam", "muon"],
         default=None,
         help="Optimizer to use for training: adam or adamw",
     )
@@ -365,6 +366,10 @@ def train_model(
         opt_class = optim.Adam
     elif optimizer_name == "adamw":
         opt_class = optim.AdamW
+    elif optimizer_name == "qhadam":
+        opt_class = QHAdam
+    elif optimizer_name == "muon":
+        opt_class = Muon
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 

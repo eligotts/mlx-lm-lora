@@ -7,3 +7,4 @@ pyyaml
 jinja2
 tqdm
 datasets
+mlx-optimizers
