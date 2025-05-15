@@ -404,7 +404,7 @@ def create_dataset(
             )
         else:
             raise ValueError("Unsupported data format for ORPO training.")
-    elif train_mode == "dpo":
+    elif train_mode == "dpo" or train_mode == "cpo":
         if chosen_feature in sample and rejected_feature in sample:
             return DPODataset(
                 data=data,

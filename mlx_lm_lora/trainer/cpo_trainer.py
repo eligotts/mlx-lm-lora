@@ -7,72 +7,35 @@ from mlx.utils import tree_flatten
 
 from mlx_lm.tuner.callbacks import TrainingCallback
 
-from .sft_trainer import SFTTrainingArgs, grad_checkpoint
+from .sft_trainer import grad_checkpoint
+from .dpo_trainer import DPOTrainingArgs as CPOTrainingArgs
 
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
 
-@dataclass
-class DPOTrainingArgs(SFTTrainingArgs):
-    beta: float = field(
-        default=0.1, metadata={"help": "Temperature parameter for DPO training."}
-    )
-    loss_type: str = field(
-        default="sigmoid",
-        metadata={"help": "DPO loss type: 'sigmoid', 'hinge', 'ipo', or 'dpop'."},
-    )
-    delta: float = field(
-        default=50.0, metadata={"help": "Delta parameter for DPOP loss type."}
-    )
-    reference_model_path: str = field(
-        default=None,
-        metadata={
-            "help": "Path to reference model weights. If None, uses the same model."
-        },
-    )
+def get_token_scores(model, x, mask):
+    inputs, targets = x[:, :-1], x[:, 1:]
+    logits = model(inputs).astype(mx.float32)
+    return -nn.losses.cross_entropy(logits, targets) * mask[:, :-1]
+
+def compute_score(scores, mask, loss_type):
+    token_count = mask.sum(-1)
+    return scores.sum(-1) / token_count if loss_type == "ipo" else scores.sum(-1)
 
 
-def dpo_loss(
-    model,
-    chosen: mx.array,
-    rejected: mx.array,
+def cpo_loss(
+    policy_chosen_score: mx.array,
+    policy_rejected_score: mx.array,
     chosen_masks: mx.array,
     rejected_masks: mx.array,
     beta: float,
     delta: float,
     loss_type: str = "sigmoid",
-    ref_model=None,
 ):
-    def get_token_scores(model, x, mask):
-        inputs, targets = x[:, :-1], x[:, 1:]
-        logits = model(inputs).astype(mx.float32)
-        return -nn.losses.cross_entropy(logits, targets) * mask[:, :-1]
-
-    def compute_score(scores, mask, loss_type):
-        token_count = mask.sum(-1)
-        return scores.sum(-1) / token_count if loss_type == "ipo" else scores.sum(-1)
-
-    # Compute scores for policy model
-    policy_chosen_scores = get_token_scores(model, chosen, chosen_masks)
-    policy_rejected_scores = get_token_scores(model, rejected, rejected_masks)
-    policy_chosen_score = compute_score(policy_chosen_scores, chosen_masks, loss_type)
-    policy_rejected_score = compute_score(policy_rejected_scores, rejected_masks, loss_type)
-
-    # Compute scores for reference model
-    if ref_model is None:
-        reference_chosen_score = mx.zeros_like(policy_chosen_score)
-        reference_rejected_score = mx.zeros_like(policy_rejected_score)
-    else:
-        ref_chosen_scores = mx.stop_gradient(get_token_scores(ref_model, chosen, chosen_masks))
-        ref_rejected_scores = mx.stop_gradient(get_token_scores(ref_model, rejected, rejected_masks))
-        reference_chosen_score = compute_score(ref_chosen_scores, chosen_masks, loss_type)
-        reference_rejected_score = compute_score(ref_rejected_scores, rejected_masks, loss_type)
-
     # Preference logits
-    logits = (policy_chosen_score - policy_rejected_score) - \
-             (reference_chosen_score - reference_rejected_score)
+    logits = (policy_chosen_score - policy_rejected_score)
 
     # Loss calculation
     if loss_type == "sigmoid":
@@ -84,7 +47,7 @@ def dpo_loss(
     elif loss_type == "dpop":
         penalty = mx.maximum(
             mx.zeros_like(policy_chosen_score),
-            reference_chosen_score - policy_chosen_score,
+            policy_rejected_score - policy_chosen_score,
         )
         losses = -(nn.log_sigmoid(beta * logits) - delta * penalty)
     else:
@@ -95,17 +58,16 @@ def dpo_loss(
     num_rejected_tokens = rejected_masks.sum(-1)
     num_tokens = (num_chosen_tokens + num_rejected_tokens).sum()
 
-    chosen_reward = beta * mx.mean(policy_chosen_score - reference_chosen_score)
-    rejected_reward = beta * mx.mean(policy_rejected_score - reference_rejected_score)
+    chosen_reward = beta * mx.mean(policy_chosen_score)
+    rejected_reward = beta * mx.mean(policy_rejected_score)
     reward = mx.stack([chosen_reward, rejected_reward])
 
     # Metrics
     metrics = {
         "accuracies": mx.mean((chosen_reward > rejected_reward).astype(mx.float32)),
         "margins": mx.mean(chosen_reward - rejected_reward),
-        "policy_rejected_logps": mx.mean(policy_rejected_score / num_rejected_tokens),
+        "policy_rejected_logps": mx.mean(policy_rejected_score),
         "policy_chosen_logps": mx.mean(policy_chosen_score / num_chosen_tokens),
-        "rejected_logits_mean": mx.mean(policy_rejected_score),
         "chosen_logits_mean": mx.mean(policy_chosen_score),
     }
 
@@ -113,7 +75,7 @@ def dpo_loss(
     return mx.mean(losses), reward, num_tokens, metrics
 
 
-def iterate_dpo_batches(dataset, batch_size, max_seq_length, train=False):
+def iterate_cpo_batches(dataset, batch_size, max_seq_length, train=False):
     idx = sorted(range(len(dataset)), key=lambda idx: len(dataset[idx]["chosen"]))
 
     step = mx.distributed.init().size()
@@ -172,9 +134,9 @@ def iterate_dpo_batches(dataset, batch_size, max_seq_length, train=False):
             break
 
 
-def evaluate_dpo(
+
+def evaluate_cpo(
     model,
-    ref_model,
     dataset,
     batch_size,
     num_batches,
@@ -182,7 +144,7 @@ def evaluate_dpo(
     delta: float,
     max_seq_length,
     loss_type,
-    loss: callable = dpo_loss,
+    loss_fn: callable = cpo_loss,
 ):
     all_losses = 0
     all_rewards = mx.zeros((2,))
@@ -193,7 +155,7 @@ def evaluate_dpo(
 
     for _, batch in zip(
         index_iterator,
-        iterate_dpo_batches(
+        iterate_cpo_batches(
             dataset=dataset,
             batch_size=batch_size,
             max_seq_length=max_seq_length,
@@ -201,18 +163,22 @@ def evaluate_dpo(
     ):
         chosen, rejected, chosen_masks, rejected_masks = batch
 
-        loss, reward, toks, metrics = loss(
-            model=model,
-            ref_model=ref_model,
-            chosen=chosen,
-            rejected=rejected,
+        policy_chosen_scores = get_token_scores(model, chosen, chosen_masks)
+        policy_rejected_scores = get_token_scores(model, rejected, rejected_masks)
+
+        policy_chosen_score = compute_score(policy_chosen_scores, chosen_masks, loss_type)
+        policy_rejected_score = compute_score(policy_rejected_scores, rejected_masks, loss_type)
+
+        loss_value, reward, toks, metrics = loss_fn(
+            policy_chosen_score=policy_chosen_score,
+            policy_rejected_score=policy_rejected_score,
             chosen_masks=chosen_masks,
             rejected_masks=rejected_masks,
             loss_type=loss_type,
             beta=beta,
             delta=delta,
         )
-        all_losses += loss * toks
+        all_losses += loss_value * toks
         all_rewards += reward
         ntokens += toks
 
@@ -235,14 +201,13 @@ def evaluate_dpo(
     return avg_loss, avg_rewards, ntokens, avg_metrics
 
 
-def train_dpo(
+def train_cpo(
     model,
-    ref_model,
     optimizer,
     train_dataset,
     val_dataset,
-    args: DPOTrainingArgs = DPOTrainingArgs(),
-    loss: callable = dpo_loss,
+    args: CPOTrainingArgs = CPOTrainingArgs(),
+    loss_fn: callable = cpo_loss,
     training_callback: TrainingCallback = None,
     loss_type="sigmoid",
 ):
@@ -261,8 +226,14 @@ def train_dpo(
     def step(batch):
         chosen, rejected, chosen_masks, rejected_masks = batch
 
+        policy_chosen_scores = get_token_scores(model, chosen, chosen_masks)
+        policy_rejected_scores = get_token_scores(model, rejected, rejected_masks)
+
+        policy_chosen_score = compute_score(policy_chosen_scores, chosen_masks, loss_type)
+        policy_rejected_score = compute_score(policy_rejected_scores, rejected_masks, loss_type)
+
         (lvalue, reward, toks, metrics), grad = loss_value_and_grad(
-            model, ref_model, chosen, rejected, chosen_masks, rejected_masks
+            policy_chosen_score, policy_rejected_score, chosen_masks=chosen_masks, rejected_masks=rejected_masks
         )
 
         grad = average_gradients(grad)
@@ -270,12 +241,10 @@ def train_dpo(
 
         return lvalue, reward, toks, metrics
 
-    def loss_wrapper(model, ref_model, chosen, rejected, chosen_masks, rejected_masks):
-        return loss(
-            model=model,
-            ref_model=ref_model,
-            chosen=chosen,
-            rejected=rejected,
+    def loss_wrapper(policy_chosen_score, policy_rejected_score, chosen_masks, rejected_masks):
+        return loss_fn(
+            policy_chosen_score=policy_chosen_score,
+            policy_rejected_score=policy_rejected_score,
             chosen_masks=chosen_masks,
             rejected_masks=rejected_masks,
             beta=args.beta,
@@ -302,7 +271,7 @@ def train_dpo(
     start = time.perf_counter()
     for it, batch in zip(
         range(1, args.iters + 1),
-        iterate_dpo_batches(
+        iterate_cpo_batches(
             dataset=train_dataset,
             batch_size=args.batch_size,
             max_seq_length=args.max_seq_length,
@@ -311,14 +280,13 @@ def train_dpo(
     ):
         if it == 1 or it % args.steps_per_eval == 0 or it == args.iters:
             stop = time.perf_counter()
-            val_loss, val_rewards, val_ntokens, val_metrics = evaluate_dpo(
+            val_loss, val_rewards, val_ntokens, val_metrics = evaluate_cpo(
                 model=model,
-                ref_model=ref_model,
                 dataset=val_dataset,
                 batch_size=args.batch_size,
                 num_batches=args.val_batches,
                 max_seq_length=args.max_seq_length,
-                loss=loss,
+                loss_fn=loss_fn,
                 beta=args.beta,
                 delta=args.delta,
                 loss_type=loss_type,

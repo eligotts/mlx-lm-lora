@@ -19,6 +19,7 @@ from .trainer.sft_trainer import SFTTrainingArgs, TrainingCallback, evaluate_sft
 from .trainer.grpo_trainer import GRPOTrainingArgs, evaluate_grpo, train_grpo
 from .trainer.orpo_trainer import ORPOTrainingArgs, evaluate_orpo, train_orpo
 from .trainer.dpo_trainer import DPOTrainingArgs, evaluate_dpo, train_dpo
+from .trainer.cpo_trainer import CPOTrainingArgs, evaluate_cpo, train_cpo
 from .trainer.datasets import CacheDataset, load_dataset
 
 from mlx_lm.tuner.utils import (
@@ -82,7 +83,7 @@ CONFIG_DEFAULTS = {
     "reward_scaling": 1.0,
 
     # DPO args
-    "dpo_loss_type": "sigmoid",
+    "dpo_cpo_loss_type": "sigmoid",
     "delta": 50.0,
     "reference_model_path": None,
 
@@ -131,8 +132,8 @@ def build_parser():
         "--train-mode",
         type=str,
         default="normal",
-        choices=["normal", "dpo", "orpo", "grpo"],
-        help="Training mode: normal, dpo, orpo, or grpo, default is normal",
+        choices=["normal", "dpo", "cpo", "orpo", "grpo"],
+        help="Training mode: normal, dpo, cpo, orpo, or grpo, default is normal",
     )
     parser.add_argument(
         "--optimizer",
@@ -238,7 +239,7 @@ def build_parser():
 
     # DPO args
     parser.add_argument(
-        "--dpo-loss-type",
+        "--dpo-cpo-loss-type",
         type=str,
         help="DPO loss type: 'sigmoid', 'hinge', 'ipo', or 'dpop'.",
         choices=["sigmoid", "hinge", "ipo", "dpop"],
@@ -410,7 +411,7 @@ def train_model(
             max_seq_length=args.max_seq_length,
             grad_checkpoint=args.grad_checkpoint,
             beta=args.beta,
-            loss_type=args.dpo_loss_type,
+            loss_type=args.dpo_cpo_loss_type,
             delta=args.delta,
             reference_model_path=args.reference_model_path,
         )
@@ -428,6 +429,32 @@ def train_model(
             train_dataset=CacheDataset(train_set),
             val_dataset=CacheDataset(valid_set),
             args=dpo_training_args,
+            training_callback=training_callback,
+        )
+    
+    elif args.train_mode == "cpo":
+        cpo_training_args = CPOTrainingArgs(
+            batch_size=args.batch_size,
+            iters=args.iters,
+            val_batches=args.val_batches,
+            steps_per_report=args.steps_per_report,
+            steps_per_eval=args.steps_per_eval,
+            steps_per_save=args.save_every,
+            adapter_file=adapter_file,
+            max_seq_length=args.max_seq_length,
+            grad_checkpoint=args.grad_checkpoint,
+            beta=args.beta,
+            loss_type=args.dpo_cpo_loss_type,
+            delta=args.delta,
+            reference_model_path=args.reference_model_path,
+        )
+
+        train_cpo(
+            model=model,
+            optimizer=opt,
+            train_dataset=CacheDataset(train_set),
+            val_dataset=CacheDataset(valid_set),
+            args=cpo_training_args,
             training_callback=training_callback,
         )
 
@@ -535,13 +562,32 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
             max_seq_length=args.max_seq_length,
             beta=args.beta,
             delta=args.delta,
-            loss_type=args.dpo_loss_type,
+            loss_type=args.dpo_cpo_loss_type,
         )
 
         test_ppl = math.exp(test_loss)
 
         print(f"Test loss {test_loss:.3f}, Test ppl {test_ppl:.3f}")
         print("DPO Test Metrics:")
+        for metric_name, metric_value in test_metrics.items():
+            print(f"  {metric_name}: {float(metric_value):.3f}")
+    
+    elif args.train_mode == "cpo":
+        test_loss, _, _, test_metrics = evaluate_cpo(
+            model=model,
+            dataset=test_set,
+            batch_size=args.batch_size,
+            num_batches=args.test_batches,
+            max_seq_length=args.max_seq_length,
+            beta=args.beta,
+            delta=args.delta,
+            loss_type=args.dpo_cpo_loss_type,
+        )
+
+        test_ppl = math.exp(test_loss)
+
+        print(f"Test loss {test_loss:.3f}, Test ppl {test_ppl:.3f}")
+        print("CPO Test Metrics:")
         for metric_name, metric_value in test_metrics.items():
             print(f"  {metric_name}: {float(metric_value):.3f}")
 
