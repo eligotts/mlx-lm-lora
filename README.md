@@ -20,6 +20,7 @@ Train Large Language Models localy on Apple Silicon using MLX. Training works wi
   - [SFT](#SFT-Training)
   - [ORPO-Training](#ORPO-Training)
   - [DPO-Training](#DPO-Training)
+  - [CPO-Training](#CPO-Training)
   - [GRPO-Training](#GRPO-Training)
   - [Evaluate](#Evaluate)
   - [Generate](#Generate)
@@ -137,7 +138,7 @@ mlx_lm_lora.train \
 
 ### ORPO-Training
 
-Odds Ratio Preference Optimization (ORPO) training fine-tunes models using human preference data. Usage:
+Odds Ratio Preference Optimization (ORPO) was introduced in ORPO: Monolithic Preference Optimization without Reference Model by Jiwoo Hong, Noah Lee, and James Thorne. Usage:
 
 ```shell
 mlx_lm_lora.train \
@@ -190,7 +191,7 @@ The trainer assigns binary rewards (1.0 chosen, 0.0 rejected) if no explicit rew
 
 ### DPO-Training
 
-Direct Preference Optimization (DPO) training allows you to fine-tune models using human preference data. To use DPO training, set the training mode to 'dpo':
+Direct Preference Optimization (DPO) training allows you to fine-tune models using human preference data, as described in the paper Direct Preference Optimization: Your Language Model is Secretly a Reward Model by Rafael Rafailov, Archit Sharma, Eric Mitchell, Stefano Ermon, Christopher D. Manning, Chelsea Finn. To use DPO training, set the training mode to 'dpo':
 
 ```shell
 mlx_lm.lora \
@@ -222,10 +223,36 @@ if the Prompt template accept a system message, you can extend the Dataset with 
 
 ---
 
+### CPO-Training
+
+Contrastive Preference Optimization (CPO) as introduced in the paper Contrastive Preference Optimization: Pushing the Boundaries of LLM Performance in Machine Translation by Haoran Xu, Amr Sharaf, Yunmo Chen, Weiting Tan, Lingfeng Shen, Benjamin Van Durme, Kenton Murray, and Young Jin Kim. At a high-level, CPO trains models to avoid generating adequate, but not perfect translations in Machine Translation (MT) tasks. However, CPO is a general approximation of the DPO loss and can be applied to other domains, such as chat.
+
+CPO aims to mitigate two fundamental shortcomings of SFT. First, SFT’s methodology of minimizing the discrepancy between predicted outputs and gold-standard references inherently caps model performance at the quality level of the training data. Secondly, SFT lacks a mechanism to prevent the model from rejecting mistakes in translations. The CPO objective is derived from the DPO objective.
+To use CPO training, set the training mode to 'cpo':
+
+```shell
+mlx_lm.lora \
+    --model <path_to_model> \
+    --train \
+    --train-mode cpo \
+    --data <path_to_data> \
+    --beta 0.1
+```
+
+The CPO training accepts the following additional parameters:
+
+- `--beta`: Controls the strength of the DPO loss (default: 0.1)
+- `--dpo-loss-type`: Choose between "sigmoid" (default), "hinge", "ipo", or "dpop" loss functions
+- `--delta`: Margin parameter for hinge loss (default: 50.0)
+
+The CPO training uses teh exact same Dataset format defined in DPO.
+
+---
+
 ### GRPO-Training
 #### Overview
 
-Group Relative Policy Optimization (GRPO) is a fine-tuning method that optimizes language models by generating multiple responses per prompt and learning from their relative quality. This approach helps improve response quality through comparative learning.
+Group Relative Policy Optimization (GRPO) is a fine-tuning method that optimizes language models by generating multiple responses per prompt and learning from their relative quality. This approach helps improve response quality through comparative learning. As described in the paper DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models by Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Mingchuan Zhang, Y. K. Li, Y. Wu, Daya Guo.
 
 #### Dataset Format
 
