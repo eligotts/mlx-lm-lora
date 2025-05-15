@@ -8,7 +8,9 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from .sft_trainer import SFTTrainingArgs, TrainingCallback, average_gradients, grad_checkpoint
+from mlx_lm.tuner.callbacks import TrainingCallback
+
+from .sft_trainer import SFTTrainingArgs, average_gradients, grad_checkpoint
 
 from mlx_lm.models import cache
 from mlx_lm.generate import generate_step

@@ -1,22 +1,24 @@
+from pathlib import Path
 import argparse
+import types
 import math
+import yaml
 import os
 import re
-import types
-from pathlib import Path
 
+import numpy as np
+
+import mlx.optimizers as optim
 import mlx.core as mx
 import mlx.nn as nn
-import mlx.optimizers as optim
-import numpy as np
-import yaml
 
-from .trainer.callbacks import WandBCallback
-from .trainer.datasets import CacheDataset, load_dataset
+from mlx_lm.tuner.callbacks import WandBCallback
+
 from .trainer.sft_trainer import SFTTrainingArgs, TrainingCallback, evaluate_sft, train_sft
+from .trainer.grpo_trainer import GRPOTrainingArgs, evaluate_grpo, train_grpo
 from .trainer.orpo_trainer import ORPOTrainingArgs, evaluate_orpo, train_orpo
 from .trainer.dpo_trainer import DPOTrainingArgs, evaluate_dpo, train_dpo
-from .trainer.grpo_trainer import GRPOTrainingArgs, evaluate_grpo, train_grpo
+from .trainer.datasets import CacheDataset, load_dataset
 
 from mlx_lm.tuner.utils import (
     build_schedule,

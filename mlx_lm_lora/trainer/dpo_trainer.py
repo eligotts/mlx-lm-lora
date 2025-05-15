@@ -5,7 +5,9 @@ import time
 from mlx.nn.utils import average_gradients
 from mlx.utils import tree_flatten
 
-from .sft_trainer import SFTTrainingArgs, TrainingCallback, grad_checkpoint
+from mlx_lm.tuner.callbacks import TrainingCallback
+
+from .sft_trainer import SFTTrainingArgs, grad_checkpoint
 
 import mlx.core as mx
 import mlx.nn as nn

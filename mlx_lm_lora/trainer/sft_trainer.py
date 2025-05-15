@@ -9,7 +9,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from .callbacks import TrainingCallback
+from mlx_lm.tuner.callbacks import TrainingCallback
+
 from .datasets import CacheDataset
 
 
