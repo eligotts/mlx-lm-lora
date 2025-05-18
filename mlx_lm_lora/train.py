@@ -666,24 +666,32 @@ def run(args, training_callback: TrainingCallback = None):
         evaluate_model(args, model, tokenizer, test_set)
 
 
-def main():
+def main(args=None):
+    import os, types, yaml
     os.environ["TOKENIZERS_PARALLELISM"] = "true"
-    parser = build_parser()
-    args = parser.parse_args()
-    config = args.config
-    args = vars(args)
-    if config:
-        print("Loading configuration file", config)
-        with open(config, "r") as file:
-            config = yaml.load(file, yaml_loader)
-        for k, v in config.items():
-            if args.get(k, None) is None:
-                args[k] = v
 
+    if args is None:
+        parser = build_parser()
+        args = parser.parse_args()
+    elif isinstance(args, dict):
+        # Allow programmatic overrides from notebook
+        default_args = vars(build_parser().parse_args([]))
+        default_args.update(args)
+        args = types.SimpleNamespace(**default_args)
+
+    if args.config:
+        with open(args.config, "r") as f:
+            config_args = yaml.load(f, Loader=yaml_loader)
+            for k, v in config_args.items():
+                if getattr(args, k, None) is None:
+                    setattr(args, k, v)
+
+    # Set all None args to defaults
     for k, v in CONFIG_DEFAULTS.items():
-        if args.get(k, None) is None:
-            args[k] = v
-    run(types.SimpleNamespace(**args))
+        if getattr(args, k, None) is None:
+            setattr(args, k, v)
+
+    run(args)
 
 
 if __name__ == "__main__":
