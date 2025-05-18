@@ -131,9 +131,9 @@ def build_parser():
     parser.add_argument(
         "--train-mode",
         type=str,
-        default="normal",
-        choices=["normal", "dpo", "cpo", "orpo", "grpo"],
-        help="Training mode: normal, dpo, cpo, orpo, or grpo, default is normal",
+        default="sft",
+        choices=["sft", "dpo", "cpo", "orpo", "grpo"],
+        help="Training mode: sft, dpo, cpo, orpo, or grpo, default is sft",
     )
     parser.add_argument(
         "--optimizer",
