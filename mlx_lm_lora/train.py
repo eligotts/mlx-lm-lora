@@ -502,7 +502,7 @@ def train_model(
             training_callback=training_callback,
         )
 
-    elif args.train_mode == "normal":
+    elif args.train_mode == "sft":
         sft_training_args = SFTTrainingArgs(
             batch_size=args.batch_size,
             iters=args.iters,

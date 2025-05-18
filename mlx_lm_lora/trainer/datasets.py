@@ -370,7 +370,7 @@ def create_dataset(
     config,
 ):
     mask_prompt = getattr(config, "mask_prompt", False)
-    train_mode = getattr(config, "train_mode", "normal")
+    train_mode = getattr(config, "train_mode", "sft")
 
     text_feature = getattr(config, "text_feature", "text")
     chat_feature = getattr(config, "chat_feature", "messages")
@@ -430,7 +430,7 @@ def create_dataset(
             )
         else:
             raise ValueError("Unsupported data format for GRPO training.")
-    elif train_mode == "normal":
+    elif train_mode == "sft":
         if prompt_feature in sample and completion_feature in sample:
             return CompletionsDataset(
                 data, tokenizer, prompt_feature, completion_feature, mask_prompt
