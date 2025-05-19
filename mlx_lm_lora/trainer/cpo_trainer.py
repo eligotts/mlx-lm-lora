@@ -144,7 +144,6 @@ def evaluate_cpo(
     delta: float,
     max_seq_length,
     loss_type,
-    gradient_accumulation_steps: int,
     loss_fn: callable = cpo_loss,
 ):
     all_losses = 0
@@ -179,7 +178,6 @@ def evaluate_cpo(
             beta=beta,
             delta=delta,
         )
-        loss_value = loss_value / gradient_accumulation_steps
         all_losses += loss_value * toks
         all_rewards += reward
         ntokens += toks
@@ -237,8 +235,10 @@ def train_cpo(
         (lvalue, reward, toks, metrics), grad = loss_value_and_grad(
             policy_chosen_score, policy_rejected_score, chosen_masks=chosen_masks, rejected_masks=rejected_masks
         )
-        grad = average_gradients(grad)
-        optimizer.update(model, grad)
+        
+        if (it + 1) % args.gradient_accumulation_steps == 0:
+            grad = average_gradients(grad)
+            optimizer.update(model, grad)
 
         return (lvalue / args.gradient_accumulation_steps), reward, toks, metrics
 
@@ -291,7 +291,6 @@ def train_cpo(
                 beta=args.beta,
                 delta=args.delta,
                 loss_type=loss_type,
-                gradient_accumulation_steps=args.gradient_accumulation_steps
             )
             val_time = time.perf_counter() - stop
             if rank == 0:

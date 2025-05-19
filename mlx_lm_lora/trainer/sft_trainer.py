@@ -150,7 +150,6 @@ def evaluate_sft(
     dataset,
     batch_size,
     num_batches,
-    gradient_accumulation_steps: int,
     max_seq_length=2048,
     loss: callable = default_loss,
     iterate_batches: callable = iterate_batches,
@@ -170,7 +169,6 @@ def evaluate_sft(
         ),
     ):
         losses, toks = loss(model, *batch)
-        losses = losses / gradient_accumulation_steps
         all_losses += losses * toks
         ntokens += toks
         mx.eval(all_losses, ntokens)
@@ -209,11 +207,9 @@ def train_sft(
         # Forward and backward pass
         (lvalue, toks), grad = loss_value_and_grad(model, *batch)
 
-        # All reduce the gradients if running in distributed mode
-        grad = average_gradients(grad)
-
-        # Model update
-        optimizer.update(model, grad)
+        if (it + 1) % args.gradient_accumulation_steps == 0:
+            grad = average_gradients(grad)
+            optimizer.update(model, grad)
 
         return (lvalue / args.gradient_accumulation_steps), toks
 
@@ -246,7 +242,6 @@ def train_sft(
                 num_batches=args.val_batches,
                 max_seq_length=args.max_seq_length,
                 iterate_batches=iterate_batches,
-                gradient_accumulation_steps=args.gradient_accumulation_steps
             )
             model.train()
             val_time = time.perf_counter() - tic

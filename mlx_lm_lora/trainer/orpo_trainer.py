@@ -149,7 +149,7 @@ def iterate_orpo_batches(dataset, batch_size, max_seq_length, train=False):
 
 
 def evaluate_orpo(
-    model, dataset, batch_size, num_batches, beta: float, gradient_accumulation_steps: int, max_seq_length=2048
+    model, dataset, batch_size, num_batches, beta: float, max_seq_length=2048
 ):
     all_losses = 0
     all_rewards = mx.zeros((2,))
@@ -180,7 +180,7 @@ def evaluate_orpo(
             preference_scores=preference_scores,
             beta=beta,
         )
-        all_losses += (lvalue / gradient_accumulation_steps) * toks
+        all_losses += lvalue * toks
         all_rewards += reward * toks
         ntokens += toks
 
@@ -241,8 +241,9 @@ def train_orpo(
             preference_scores=preference_scores,
         )
 
-        grad = average_gradients(grad)
-        optimizer.update(model, grad)
+        if (it + 1) % args.gradient_accumulation_steps == 0:
+            grad = average_gradients(grad)
+            optimizer.update(model, grad)
 
         return (lvalue / args.gradient_accumulation_steps), reward, toks, metrics
 
@@ -295,7 +296,6 @@ def train_orpo(
                 num_batches=args.val_batches,
                 max_seq_length=args.max_seq_length,
                 beta=args.beta,
-                gradient_accumulation_steps=args.gradient_accumulation_steps
             )
             val_time = time.perf_counter() - stop
             if rank == 0:

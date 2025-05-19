@@ -542,7 +542,6 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
             num_batches=args.test_batches,
             max_seq_length=args.max_seq_length,
             beta=args.beta,
-            gradient_accumulation_steps=args.gradient_accumulation_steps
         )
         test_ppl = math.exp(test_loss)
         print(
@@ -569,7 +568,6 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
             beta=args.beta,
             delta=args.delta,
             loss_type=args.dpo_cpo_loss_type,
-            gradient_accumulation_steps=args.gradient_accumulation_steps
         )
 
         test_ppl = math.exp(test_loss)
@@ -589,7 +587,6 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
             beta=args.beta,
             delta=args.delta,
             loss_type=args.dpo_cpo_loss_type,
-            gradient_accumulation_steps=args.gradient_accumulation_steps
         )
 
         test_ppl = math.exp(test_loss)
@@ -619,7 +616,6 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
             epsilon_high=args.epsilon_high,
             temperature=args.temperature,
             max_tokens=args.max_seq_length,
-            gradient_accumulation_steps=args.gradient_accumulation_steps
         )
 
         test_ppl = math.exp(test_loss)
