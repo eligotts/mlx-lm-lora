@@ -7,6 +7,8 @@ train: true
 # Train fo 2 full epochs
 epochs: 2
 
+gradient_accumulation_steps: 4
+
 # The train method: "lora", "dora", or "full".
 train_type: lora
 

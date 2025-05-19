@@ -530,6 +530,7 @@ def evaluate_grpo(
     max_seq_length: int,
     max_tokens: int,
     temperature: float,
+    gradient_accumulation_steps: int,
     reward_funcs: Optional[List[RewardFunctions]] = [
         r1_accuracy_reward_func,
         r1_int_reward_func,
@@ -569,7 +570,7 @@ def evaluate_grpo(
             is_validation=True,
         )
 
-        all_losses += losses * toks
+        all_losses += (losses / gradient_accumulation_steps) * toks
         ntokens += toks
 
         if all_metrics is None:
@@ -654,7 +655,7 @@ def train_grpo(
         grad = average_gradients(grad)
         optimizer.update(model, grad)
 
-        return loss, toks, metrics
+        return (loss / args.gradient_accumulation_steps), toks, metrics
 
     loss_value_and_grad = nn.value_and_grad(model, loss_fn)
 
@@ -708,6 +709,7 @@ def train_grpo(
                 epsilon_high=args.epsilon_high,
                 temperature=args.temperature,
                 iterate_batches=iterate_batches,
+                gradient_accumulation_steps=args.gradient_accumulation_steps
             )
             val_time = time.perf_counter() - stop
             if rank == 0:

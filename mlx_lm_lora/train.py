@@ -700,8 +700,4 @@ def main(args=None):
 
 
 if __name__ == "__main__":
-    print(
-        "Calling `python -m mlx_lm_lora...` directly is deprecated."
-        " Use `mlx_lm_lora.train...` or `python -m mlx_lm_lora train ...` instead."
-    )
     main()
