@@ -1,4 +1,9 @@
-# mlx-lm-lora
+<h1 align="center">MLX-LM-LORA</h1>
+
+<p align="center">
+  <img src="logo.png" alt="logo" width="300"/>
+</p>
+
 Train Large Language Models localy on Apple Silicon using MLX. Training works with all the model that are supported with MLX-LM, for example:
 
 - Llama, 3, 4
