@@ -166,6 +166,7 @@ def evaluate_dpo(
     num_batches,
     beta: float,
     delta: float,
+    gradient_accumulation_steps: int,
     max_seq_length,
     loss_type,
     loss_fn: callable = dpo_loss,
@@ -213,6 +214,7 @@ def evaluate_dpo(
             beta=beta,
             delta=delta,
         )
+        loss_value = loss_value / gradient_accumulation_steps
         all_losses += loss_value * toks
         all_rewards += reward
         ntokens += toks
@@ -284,7 +286,7 @@ def train_dpo(
         grad = average_gradients(grad)
         optimizer.update(model, grad)
 
-        return lvalue, reward, toks, metrics
+        return (lvalue / args.gradient_accumulation_steps), reward, toks, metrics
 
     def loss_wrapper(policy_chosen_score, policy_rejected_score, reference_chosen_score, reference_rejected_score, chosen_masks, rejected_masks):
         return loss_fn(
@@ -338,6 +340,7 @@ def train_dpo(
                 beta=args.beta,
                 delta=args.delta,
                 loss_type=loss_type,
+                gradient_accumulation_steps=args.gradient_accumulation_steps
             )
             val_time = time.perf_counter() - stop
             if rank == 0:
