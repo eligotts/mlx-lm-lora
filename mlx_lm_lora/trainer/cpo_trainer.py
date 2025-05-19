@@ -32,7 +32,6 @@ def cpo_loss(
     rejected_masks: mx.array,
     beta: float,
     delta: float,
-    gradient_accumulation_steps: int = 1,
     loss_type: str = "sigmoid",
 ):
     # Preference logits
@@ -73,7 +72,7 @@ def cpo_loss(
     }
 
     mx.clear_cache()
-    return (mx.mean(losses) / gradient_accumulation_steps), reward, num_tokens, metrics
+    return mx.mean(losses), reward, num_tokens, metrics
 
 
 def iterate_cpo_batches(dataset, batch_size, max_seq_length, train=False):
@@ -145,6 +144,7 @@ def evaluate_cpo(
     delta: float,
     max_seq_length,
     loss_type,
+    gradient_accumulation_steps: int,
     loss_fn: callable = cpo_loss,
 ):
     all_losses = 0
@@ -179,6 +179,7 @@ def evaluate_cpo(
             beta=beta,
             delta=delta,
         )
+        loss_value = loss_value / gradient_accumulation_steps
         all_losses += loss_value * toks
         all_rewards += reward
         ntokens += toks
@@ -236,11 +237,10 @@ def train_cpo(
         (lvalue, reward, toks, metrics), grad = loss_value_and_grad(
             policy_chosen_score, policy_rejected_score, chosen_masks=chosen_masks, rejected_masks=rejected_masks
         )
-
         grad = average_gradients(grad)
         optimizer.update(model, grad)
 
-        return lvalue, reward, toks, metrics
+        return (lvalue / args.gradient_accumulation_steps), reward, toks, metrics
 
     def loss_wrapper(policy_chosen_score, policy_rejected_score, chosen_masks, rejected_masks):
         return loss_fn(
@@ -291,6 +291,7 @@ def train_cpo(
                 beta=args.beta,
                 delta=args.delta,
                 loss_type=loss_type,
+                gradient_accumulation_steps=args.gradient_accumulation_steps
             )
             val_time = time.perf_counter() - stop
             if rank == 0:

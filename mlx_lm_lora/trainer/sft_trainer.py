@@ -34,6 +34,7 @@ def grad_checkpoint(layer):
 class SFTTrainingArgs:
     batch_size: int = field(default=4, metadata={"help": "Minibatch size."})
     iters: int = field(default=100, metadata={"help": "Iterations to train for."})
+    gradient_accumulation_steps: int = field(default=1, metadata={"help": "Number of gradient accumulation steps."})
     val_batches: int = field(
         default=25,
         metadata={
@@ -72,11 +73,10 @@ def default_loss(model, batch, lengths):
     steps = mx.arange(1, targets.shape[1] + 1)
     mask = mx.logical_and(steps >= lengths[:, 0:1], steps <= lengths[:, 1:])
 
-    ce = nn.losses.cross_entropy(logits, targets) * mask
+    loss = nn.losses.cross_entropy(logits, targets) * mask
     ntoks = mask.sum()
-    ce = ce.astype(mx.float32).sum() / ntoks
-
-    return ce, ntoks
+    loss = loss.astype(mx.float32).sum() / ntoks
+    return loss, ntoks
 
 
 def iterate_batches(

@@ -57,7 +57,7 @@ CONFIG_DEFAULTS = {
     "seed": 0,
     "num_layers": 16,
     "batch_size": 4,
-    "iters": 1000,
+    "iters": None,
     "epoch": None,
     "gradient_accumulation_steps": 1,
     "val_batches": 25,
@@ -389,6 +389,7 @@ def train_model(
             grad_checkpoint=args.grad_checkpoint,
             beta=args.beta,
             reward_scaling=args.reward_scaling,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
         )
 
         train_orpo(
@@ -414,6 +415,7 @@ def train_model(
             loss_type=args.dpo_cpo_loss_type,
             delta=args.delta,
             reference_model_path=args.reference_model_path,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
         )
 
         print("Loading pretrained reference model")
@@ -447,6 +449,7 @@ def train_model(
             loss_type=args.dpo_cpo_loss_type,
             delta=args.delta,
             reference_model_path=args.reference_model_path,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
         )
 
         train_cpo(
@@ -476,6 +479,7 @@ def train_model(
             epsilon_high=args.epsilon_high,
             reference_model_path=args.reference_model_path,
             temperature=args.temperature,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
             reward_weights=(
                 [float(x) for x in args.reward_weights.strip("[]").split(",")]
                 if args.reward_weights
@@ -513,6 +517,7 @@ def train_model(
             adapter_file=adapter_file,
             max_seq_length=args.max_seq_length,
             grad_checkpoint=args.grad_checkpoint,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
         )
 
         train_sft(
