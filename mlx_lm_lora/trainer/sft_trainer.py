@@ -150,6 +150,7 @@ def evaluate_sft(
     dataset,
     batch_size,
     num_batches,
+    gradient_accumulation_steps: int,
     max_seq_length=2048,
     loss: callable = default_loss,
     iterate_batches: callable = iterate_batches,
@@ -169,6 +170,7 @@ def evaluate_sft(
         ),
     ):
         losses, toks = loss(model, *batch)
+        losses = losses / gradient_accumulation_steps
         all_losses += losses * toks
         ntokens += toks
         mx.eval(all_losses, ntokens)
@@ -213,7 +215,7 @@ def train_sft(
         # Model update
         optimizer.update(model, grad)
 
-        return lvalue, toks
+        return (lvalue / args.gradient_accumulation_steps), toks
 
     loss_value_and_grad = nn.value_and_grad(model, loss)
 
@@ -234,8 +236,6 @@ def train_sft(
         ),
     ):
         tic = time.perf_counter()
-        # Report validation loss if needed, the first validation loss
-        # is always measured before any training.
         if it == 1 or it % args.steps_per_eval == 0 or it == args.iters:
             tic = time.perf_counter()
             val_loss = evaluate_sft(
@@ -246,6 +246,7 @@ def train_sft(
                 num_batches=args.val_batches,
                 max_seq_length=args.max_seq_length,
                 iterate_batches=iterate_batches,
+                gradient_accumulation_steps=args.gradient_accumulation_steps
             )
             model.train()
             val_time = time.perf_counter() - tic
@@ -274,7 +275,6 @@ def train_sft(
         mx.eval(state, losses, n_tokens)
         train_time += time.perf_counter() - tic
 
-        # Report training loss if needed
         if it % args.steps_per_report == 0 or it == args.iters:
             train_loss = mx.distributed.all_sum(losses, stream=mx.cpu).item()
             train_loss /= steps * world_size
@@ -312,7 +312,6 @@ def train_sft(
             steps = 0
             train_time = 0
 
-        # Save adapter weights
         if it % args.steps_per_save == 0 and rank == 0:
             adapter_weights = dict(tree_flatten(model.trainable_parameters()))
             mx.save_safetensors(str(args.adapter_file), adapter_weights)
@@ -325,7 +324,6 @@ def train_sft(
                 f"{args.adapter_file} and {checkpoint}."
             )
 
-    # Save final weights
     if rank == 0:
         adapter_weights = dict(tree_flatten(model.trainable_parameters()))
         mx.save_safetensors(str(args.adapter_file), adapter_weights)
