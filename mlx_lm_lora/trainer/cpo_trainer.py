@@ -32,6 +32,7 @@ def cpo_loss(
     rejected_masks: mx.array,
     beta: float,
     delta: float,
+    gradient_accumulation_steps: int = 1,
     loss_type: str = "sigmoid",
 ):
     # Preference logits
@@ -72,7 +73,7 @@ def cpo_loss(
     }
 
     mx.clear_cache()
-    return mx.mean(losses), reward, num_tokens, metrics
+    return (mx.mean(losses) / gradient_accumulation_steps), reward, num_tokens, metrics
 
 
 def iterate_cpo_batches(dataset, batch_size, max_seq_length, train=False):

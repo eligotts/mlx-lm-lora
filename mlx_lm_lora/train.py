@@ -59,6 +59,7 @@ CONFIG_DEFAULTS = {
     "batch_size": 4,
     "iters": 1000,
     "epoch": None,
+    "gradient_accumulation_steps": 1,
     "val_batches": 25,
     "learning_rate": 1e-5,
     "steps_per_report": 10,
@@ -154,10 +155,11 @@ def build_parser():
     parser.add_argument("--batch-size", type=int, help="Minibatch size.")
     parser.add_argument("--iters", type=int, help="Iterations to train for.")
     parser.add_argument("--epoch", type=int, help="Epochs to train for. Ignored if --iters is provided.")
+    parser.add_argument("--gradient-accumulation-steps", type=int, help="Number of gradient accumulation steps.", default=1)
     parser.add_argument(
         "--val-batches",
         type=int,
-        help="Number of validation batches, -1 uses the entire validation set.",
+        help="Number of validation batches, -1 uses the entire validation set."
     )
     parser.add_argument("--learning-rate", type=float, help="Adam learning rate.")
     parser.add_argument(
