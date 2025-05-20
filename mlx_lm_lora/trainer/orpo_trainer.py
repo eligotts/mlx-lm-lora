@@ -302,7 +302,7 @@ def train_orpo(
             )
             val_time = time.perf_counter() - stop
             if rank == 0:
-                print(
+                tqdm.write(
                     f"Iter {it}: "
                     f"Val loss {val_loss:.3f}, "
                     f"Val chosen reward {val_rewards[0]:.3f}, "
@@ -310,7 +310,6 @@ def train_orpo(
                     f"Val accuracy {val_metrics['accuracies']:.3f}, "
                     f"Val margin {val_metrics['margins']:.3f}, "
                     f"Val took {val_time:.3f}s",
-                    flush=True,
                 )
 
             if training_callback is not None:
@@ -362,7 +361,7 @@ def train_orpo(
                     'loss': f"{train_loss:.3f}",
                     'it/s': f"{it_sec:.3f}",
                 })
-                print(
+                tqdm.write(
                     f"\nIter {it}: "
                     f"loss {train_loss:.3f}, "
                     f"chosen_r {train_rewards[0]:.3f}, "

@@ -713,7 +713,7 @@ def train_grpo(
             )
             val_time = time.perf_counter() - stop
             if rank == 0:
-                print(
+                tqdm.write(
                     f"Iter {it}: "
                     f"Val loss {val_loss:.3f}, "
                     f"Val took {val_time:.3f}s",
@@ -759,7 +759,7 @@ def train_grpo(
                     'loss': f"{train_loss:.3f}",
                     'it/s': f"{it_sec:.3f}",
                 })
-                print(
+                tqdm.write(
                     f"\nIter {it}: "
                     f"loss {train_loss:.3f}, "
                     f"total_r_mean {avg_metrics['total_rewards_mean']:.3f}, "

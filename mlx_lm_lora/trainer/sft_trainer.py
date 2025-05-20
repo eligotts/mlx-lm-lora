@@ -119,12 +119,6 @@ def iterate_batches(
             else:
                 offsets = [0] * len(batch)
             lengths = [len(x) for x in batch]
-            if max(lengths) > max_seq_length:
-                print(
-                    f"[WARNING] Some sequences are longer than {max_seq_length} tokens. "
-                    f"The longest sentence {max(lengths)} will be truncated to {max_seq_length}. "
-                    "Consider pre-splitting your data to save memory."
-                )
 
             # Pad to one plus nearest multiple of pad_to or the maximum length
             pad_to = 32
@@ -246,11 +240,10 @@ def train_sft(
             model.train()
             val_time = time.perf_counter() - tic
             if rank == 0:
-                print(
+                tqdm.write(
                     f"Iter {it}: "
                     f"Val loss {val_loss:.3f}, "
                     f"Val took {val_time:.3f}s",
-                    flush=True,
                 )
 
             if training_callback is not None:
@@ -284,7 +277,7 @@ def train_sft(
                     'loss': f"{train_loss:.3f}",
                     'it/s': f"{it_sec:.3f}",
                 })
-                print(
+                tqdm.write(
                     f"\nIter {it}: "
                     f"loss {train_loss:.3f}, "
                     f"lr {learning_rate:.3e}, "
