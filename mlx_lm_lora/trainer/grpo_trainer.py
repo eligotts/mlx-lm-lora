@@ -771,7 +771,6 @@ def train_grpo(
                     f"it/s {it_sec:.3f}, "
                     f"tok/s {tokens_sec:.3f}, "
                     f"peak_mem {peak_mem:.3f}GB"
-                    f"\n"
                 )
 
             if training_callback is not None:

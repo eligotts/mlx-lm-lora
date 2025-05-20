@@ -292,7 +292,6 @@ def train_sft(
                     f"tok/s {tokens_sec:.3f}, "
                     f"trained_tok {trained_tokens}, "
                     f"peak_mem {peak_mem:.3f}GB"
-                    f"\n"
                 )
 
             if training_callback is not None:
