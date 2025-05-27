@@ -61,7 +61,7 @@ CONFIG_DEFAULTS = {
     "num_layers": 16,
     "batch_size": 4,
     "iters": None,
-    "epoch": None,
+    "epochs": None,
     "gradient_accumulation_steps": 1,
     "val_batches": 25,
     "learning_rate": 1e-5,
@@ -177,7 +177,7 @@ def build_parser():
     )
     parser.add_argument("--batch-size", type=int, help="Minibatch size.")
     parser.add_argument("--iters", type=int, help="Iterations to train for.")
-    parser.add_argument("--epoch", type=int, help="Epochs to train for. Ignored if --iters is provided.")
+    parser.add_argument("--epochs", type=int, help="Epochs to train for. Ignored if --iters is provided.")
     parser.add_argument("--gradient-accumulation-steps", type=int, help="Number of gradient accumulation steps.", default=1)
     parser.add_argument(
         "--val-batches",
@@ -365,11 +365,11 @@ def train_model(
 ):
     mx.random.seed(args.seed)
 
-    if args.iters is None and args.epoch is not None:
+    if args.iters is None and args.epochs is not None:
         num_samples = len(train_set)
-        batches_per_epoch = math.ceil(num_samples / args.batch_size)
-        args.iters = args.epoch * batches_per_epoch
-        print(f"[INFO] Calculated {args.iters} iterations from {args.epoch} epochs (dataset size: {num_samples}, batch size: {args.batch_size})")
+        batches_per_epochs = math.ceil(num_samples / args.batch_size)
+        args.iters = args.epochs * batches_per_epochs
+        print(f"[INFO] Calculated {args.iters} iterations from {args.epochs} epochs (dataset size: {num_samples}, batch size: {args.batch_size})")
 
     model.freeze()
     if args.num_layers > len(model.layers):
