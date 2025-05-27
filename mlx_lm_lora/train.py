@@ -95,6 +95,8 @@ CONFIG_DEFAULTS = {
     "use_prompt": False,
     "temperature": 0.8,
     "reward_weights": None,
+    "reward_functions": None,
+    "reward_functions_file": None,
 }
 
 
@@ -303,6 +305,31 @@ def build_parser():
         type=str,
         help="Weights for each reward function. Must match the number of reward functions and be in this format [0.1, 0.2, 0.3, 0.4, 0.5]. If not given, all rewards are weighted equally with weight `1.0`.",
         default=None,
+    )
+    parser.add_argument(
+        "--reward-functions",
+        type=str,
+        help=(
+            "Comma-separated list of reward function names to use. These must be registered in the reward_functions registry. "
+            "Use --list-reward-functions to see available functions. "
+            "Example: r1_accuracy_reward_func,action_format_reward_func"
+        ),
+        default=None,
+    )
+    parser.add_argument(
+        "--reward-functions-file",
+        type=str,
+        help=(
+            "Path to a Python file containing custom reward functions. "
+            "The file should define functions decorated with @register_reward_function(). "
+            "Example: path/to/my_reward_functions.py"
+        ),
+        default=None,
+    )
+    parser.add_argument(
+        "--list-reward-functions",
+        action="store_true",
+        help="List all available reward functions and exit",
     )
     return parser
 
