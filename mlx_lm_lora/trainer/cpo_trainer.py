@@ -1,8 +1,6 @@
-from dataclasses import dataclass, field
-from functools import partial
 from pathlib import Path
+from tqdm import tqdm
 import time
-from typing import Optional, List, Tuple, Dict, Any
 
 from mlx.nn.utils import average_gradients
 from mlx.utils import tree_flatten
@@ -15,7 +13,6 @@ from .dpo_trainer import DPOTrainingArgs as CPOTrainingArgs
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from tqdm import tqdm
 
 
 def get_token_scores(model, x, mask):
