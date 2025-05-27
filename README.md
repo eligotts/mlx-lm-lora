@@ -110,6 +110,7 @@ The data should be in JSONL format with one of the following structures:
 
 Chat-style (preferred for chat models):
 
+```json
 {
   "messages": [
     {"role": "system", "content": "You are a helpful assistant."},
@@ -117,10 +118,13 @@ Chat-style (preferred for chat models):
     {"role": "assistant", "content": "Paris."}
   ]
 }
+```
 
 Prompt-completion style:
 
+```json
 {"prompt": "What is the capital of France?", "completion": "Paris."}
+```
 
 You can mix system messages or use multi-turn chat formatting depending on the target model’s capabilities.
 
@@ -132,12 +136,14 @@ Additional Options
 
 Example with chat template and prompt masking:
 
+```text
 mlx_lm_lora.train \
     --model <path_to_model> \
     --train \
     --data <path_to_data> \
     --use-chat-template True \
     --mask-prompt
+```
 
 ---
 
