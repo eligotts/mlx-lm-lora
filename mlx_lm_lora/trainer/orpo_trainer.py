@@ -215,7 +215,8 @@ def train_orpo(
     args: ORPOTrainingArgs = ORPOTrainingArgs(),
     training_callback: TrainingCallback = None,
 ):
-    print(f"Starting ORPO training..., iters: {args.iters}")
+    mx.set_wired_limit(mx.metal.device_info()["max_recommended_working_set_size"])
+    print(f"Starting training..., iters: {args.iters}")
     world = mx.distributed.init()
     world_size = world.size()
     rank = world.rank()

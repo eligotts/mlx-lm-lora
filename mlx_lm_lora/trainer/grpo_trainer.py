@@ -1,13 +1,13 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
 from pathlib import Path
+from tqdm import tqdm
 import time
 
 from mlx.utils import tree_flatten
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from tqdm import tqdm
 
 from mlx_lm.tuner.callbacks import TrainingCallback
 
@@ -610,9 +610,8 @@ def train_grpo(
     iterate_batches: callable = iterate_grpo_batches,
     training_callback: TrainingCallback = None,
 ):
-    print(
-        f"Starting GRPO training with {len(reward_funcs)} reward functions..., iters: {args.iters}"
-    )
+    mx.set_wired_limit(mx.metal.device_info()["max_recommended_working_set_size"])
+    print(f"Starting training..., iters: {args.iters}")
     world = mx.distributed.init()
     world_size = world.size()
     rank = world.rank()
