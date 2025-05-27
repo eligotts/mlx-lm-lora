@@ -1,7 +1,9 @@
 from pathlib import Path
+import importlib.util
 import argparse
 import math
 import yaml
+import sys
 import re
 
 import numpy as np
@@ -13,6 +15,7 @@ import mlx.nn as nn
 from mlx_lm.tuner.callbacks import WandBCallback
 from mlx_optimizers import Muon, QHAdam
 
+from .trainer.grpo_reward_functions import get_reward_function, get_default_reward_functions, list_available_reward_functions
 from .trainer.sft_trainer import SFTTrainingArgs, TrainingCallback, evaluate_sft, train_sft
 from .trainer.grpo_trainer import GRPOTrainingArgs, evaluate_grpo, train_grpo
 from .trainer.orpo_trainer import ORPOTrainingArgs, evaluate_orpo, train_orpo
@@ -98,6 +101,24 @@ CONFIG_DEFAULTS = {
     "reward_functions": None,
     "reward_functions_file": None,
 }
+
+
+def load_reward_functions_from_file(file_path):
+    """Load reward functions from a Python file"""
+    if not file_path or not Path(file_path).exists():
+        return None
+    
+    try:
+        print(f"Loading custom reward functions from {file_path}")
+        spec = importlib.util.spec_from_file_location("custom_rewards", file_path)
+        custom_rewards = importlib.util.module_from_spec(spec)
+        sys.modules["custom_rewards"] = custom_rewards
+        spec.loader.exec_module(custom_rewards)
+        print("Successfully loaded custom reward functions")
+        return True
+    except Exception as e:
+        print(f"Error loading custom reward functions: {e}")
+        return None
 
 
 def build_parser():
@@ -489,6 +510,20 @@ def train_model(
         )
 
     elif args.train_mode == "grpo":
+        if args.reward_functions_file:
+            load_reward_functions_from_file(args.reward_functions_file)
+        
+        reward_funcs = get_default_reward_functions()
+        if args.reward_functions:
+            func_names = [name.strip() for name in args.reward_functions.split(',')]
+            try:
+                reward_funcs = [get_reward_function(name) for name in func_names]
+                print(f"Using custom reward functions: {', '.join(func_names)}")
+            except KeyError as e:
+                print(f"Error: {str(e)}")
+                print(f"Available reward functions: {list_available_reward_functions()}")
+                return
+            
         grpo_training_args = GRPOTrainingArgs(
             batch_size=args.batch_size,
             iters=args.iters,
@@ -529,6 +564,7 @@ def train_model(
             optimizer=opt,
             train_dataset=train_set,
             val_dataset=valid_set,
+            reward_funcs=reward_funcs,
             args=grpo_training_args,
             training_callback=training_callback,
         )
