@@ -15,31 +15,22 @@ class GRPODataset:
         answer_key: str = "answer",
         system_key: str = "system",
         type_key: str = "type",
-        use_chat_template: bool = False,
-        use_prompt: bool = False
     ):
         self._data = []
         for item in data:
             prompt_str = str(item[prompt_key])
             answer_str = str(item[answer_key])
             type_info = item.get(type_key, None)
-            if use_chat_template:
-                default_system_str = "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>."
-                system_str = item.get(system_key, default_system_str)
-                prompt_tokens = tokenizer.apply_chat_template(
-                    [
-                        {'role': 'system', 'content': system_str},
-                        {'role': 'user', 'content': prompt_str}
-                    ],
-                    add_generation_prompt=True
-                )
-                answer_tokens = tokenizer.encode(answer_str)
-            else:
-                if use_prompt:
-                    prompt_tokens = tokenizer.encode(f"""A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>. User: {prompt_str} Assistant: """)
-                else:
-                    prompt_tokens = tokenizer.encode(prompt_str)
-                answer_tokens = tokenizer.encode(answer_str)
+            default_system_str = "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>."
+            system_str = item.get(system_key, default_system_str)
+            prompt_tokens = tokenizer.apply_chat_template(
+                [
+                    {'role': 'system', 'content': system_str},
+                    {'role': 'user', 'content': prompt_str}
+                ],
+                add_generation_prompt=True
+            )
+            answer_tokens = tokenizer.encode(answer_str)
             self._data.append((prompt_tokens, answer_tokens, prompt_str, answer_str, type_info))
 
     def __getitem__(self, idx: int) -> Tuple[List[int], List[int], str, str]:

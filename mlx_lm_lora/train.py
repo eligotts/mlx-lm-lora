@@ -94,8 +94,6 @@ CONFIG_DEFAULTS = {
     "epsilon": 1e-4,
     "epsilon_high": None,
     "max_completion_length": 512,
-    "use_chat_template": False,
-    "use_prompt": False,
     "temperature": 0.8,
     "reward_weights": None,
     "reward_functions": None,
@@ -301,18 +299,6 @@ def build_parser():
         "--epsilon-high",
         type=float,
         help="Upper-bound epsilon value for clipping. If not specified, it defaults to the same value as the lower-bound specified in argument epsilon.",
-        default=None,
-    )
-    parser.add_argument(
-        "--use-chat-template",
-        action="store_true",
-        help="If the model is a Chat model, use the Chat template.",
-        default=None,
-    )
-    parser.add_argument(
-        "--use-prompt",
-        action="store_true",
-        help="Rather to use the prompt from the R1 paper.",
         default=None,
     )
     parser.add_argument(
