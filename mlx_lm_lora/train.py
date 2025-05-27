@@ -49,7 +49,7 @@ yaml_loader.add_implicit_resolver(
 
 CONFIG_DEFAULTS = {
     "model": "mlx_model",
-    "train": False,
+    "train": True,
     "train_type": "lora",
     "optimizer": "adam",
     "optimizer_config": {

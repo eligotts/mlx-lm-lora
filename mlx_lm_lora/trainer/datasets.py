@@ -416,8 +416,6 @@ def create_dataset(
                 answer_key=answer_feature,
                 system_key=system_feature,
                 type_key=type_feature,
-                use_chat_template=use_chat_template,
-                use_prompt=use_prompt
             )
         else:
             raise ValueError("Unsupported data format for GRPO training.")
