@@ -112,12 +112,12 @@ def generate_user_message(model, tokenizer, args, prompt_or_topic, conversation_
         return prompt_or_topic
     
     if not conversation_history:
-        system_prompt = f"You are to adapt the role of a human user. {args.user_role}"
-        user_prompt = f"You are struggling with this topic: '{prompt_or_topic}'. Ask a specific question or describe a concrete issue you're facing."
+        system_prompt = f"You are to adapt the role of a human user. {args.user_role}."
+        user_prompt = f"You are struggling with this topic: '{prompt_or_topic}'. Ask a specific question or describe a concrete issue you're facing. Only return the question."
     else:
         system_prompt = f"You are a user continuing a conversation. {args.user_role}"
         last_assistant_msg = conversation_history[-1]['content']
-        user_prompt = f"The assistant just said:\n\n{last_assistant_msg}\n\nNow ask a follow-up question or respond naturally to continue the conversation about {prompt_or_topic}."
+        user_prompt = f"The assistant just said:\n\n{last_assistant_msg}\n\nNow ask a follow-up question or respond naturally to continue the conversation about {prompt_or_topic}. Still only respond with the User Turn Question."
     
     messages = [
         {"role": "system", "content": system_prompt},
@@ -245,6 +245,12 @@ def main():
     # Data source options
     parser.add_argument('--topics', nargs='+', 
                        help="List of topics to generate conversations for (creates prompts from scratch)")
+    
+    parser.add_argument('--qanda', action='store_true',
+                        help='Add Q&A about the topics.')
+    parser.add_argument('--code', action='store_true',
+                        help='Add Coding.')
+    
     parser.add_argument('--hf-dataset', 
                        help='Hugging Face dataset name (e.g., "microsoft/orca-math-word-problems-200k")')
     parser.add_argument('--jsonl-file', 
