@@ -245,19 +245,12 @@ def main():
     # Data source options
     parser.add_argument('--topics', nargs='+', 
                        help="List of topics to generate conversations for (creates prompts from scratch)")
-    
-    parser.add_argument('--qanda', action='store_true',
-                        help='Add Q&A about the topics.')
-    parser.add_argument('--code', action='store_true',
-                        help='Add Coding.')
-    
     parser.add_argument('--hf-dataset', 
                        help='Hugging Face dataset name (e.g., "microsoft/orca-math-word-problems-200k")')
     parser.add_argument('--jsonl-file', 
                        help='Path to local JSONL file with prompts')
     parser.add_argument('--combine-sources', action='store_true',
                        help='Combine multiple data sources (topics + dataset)')
-    
     # Dataset options
     parser.add_argument('--hf-split', default='train', help='Dataset split to use (default: train)')
     parser.add_argument('--max-samples', type=int, 
