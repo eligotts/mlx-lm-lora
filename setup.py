@@ -21,7 +21,7 @@ setup(
     url="https://github.com/Goekdeniz-Guelmez/mlx-lm-lora",
     license="MIT",
     install_requires=requirements,
-    packages=["mlx_lm_lora", "mlx_lm_lora.trainer", "mlx_lm_lora.synthetic_sft"],
+    packages=["mlx_lm_lora", "mlx_lm_lora.trainer"],
     python_requires=">=3.8",
     entry_points={
         "console_scripts": [
