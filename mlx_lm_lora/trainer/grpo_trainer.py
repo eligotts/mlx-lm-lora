@@ -709,8 +709,7 @@ def train_grpo(
                 tqdm.write(
                     f"Iter {it}: "
                     f"Val loss {val_loss:.3f}, "
-                    f"Val took {val_time:.3f}s",
-                    flush=True,
+                    f"Val took {val_time:.3f}s"
                 )
 
             if training_callback is not None:
