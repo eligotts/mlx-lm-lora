@@ -119,6 +119,14 @@ def load_reward_functions_from_file(file_path):
         return None
 
 
+def calculate_iters(train_set, batch_size, epochs) -> int:
+    num_samples = len(train_set)
+    batches_per_epoch = math.ceil(num_samples / batch_size)
+    iters = epochs * batches_per_epoch
+    print(f"[INFO] Calculated {iters} iterations from {epochs} epochs (dataset size: {num_samples}, batch size: {batch_size})")
+    return iters
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="LoRA or QLoRA finetuning.")
     parser.add_argument(
@@ -352,10 +360,7 @@ def train_model(
     mx.random.seed(args.seed)
 
     if args.iters is None and args.epochs is not None:
-        num_samples = len(train_set)
-        batches_per_epochs = math.ceil(num_samples / args.batch_size)
-        args.iters = args.epochs * batches_per_epochs
-        print(f"[INFO] Calculated {args.iters} iterations from {args.epochs} epochs (dataset size: {num_samples}, batch size: {args.batch_size})")
+        args.iters = calculate_iters(train_set=train_set, batch_size=args.batch_size, epochs=args.epochs)
 
     model.freeze()
     if args.num_layers > len(model.layers):
