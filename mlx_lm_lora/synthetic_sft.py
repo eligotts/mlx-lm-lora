@@ -224,7 +224,7 @@ def generate_conversation(model, tokenizer, args, prompt_or_topic, is_from_datas
     }
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate synthetic MLX dataset using MLX models")
+    parser = argparse.ArgumentParser(description="Generate synthetic dataset using MLX models")
     parser.add_argument('--model', required=True, help='MLX model path or identifier')
     parser.add_argument('--output', default='mlx_synthetic_dataset.jsonl', help='Output file path')
     parser.add_argument('--num-convos', type=int, default=50, help='Number of conversations to generate')
