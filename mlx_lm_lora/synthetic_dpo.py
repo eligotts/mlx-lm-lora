@@ -673,8 +673,7 @@ def create_interface():
     
     return demo
 
-# Launch the interface
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Generate synthetic DPO dataset using MLX models")
     parser.add_argument('--server-name', type=str, default="127.0.0.1", help='IP address to set default is localhost e.g. 127.0.0.1')
     parser.add_argument('--server-port', type=int, default=7860, help='Port to runn on')
@@ -689,3 +688,6 @@ if __name__ == "__main__":
         share=args.share,
         debug=True
     )
+
+if __name__ == "__main__":
+    main()
