@@ -43,6 +43,32 @@ class GRPODataset:
         return d
 
 
+class PreferenceDataset:
+    def __init__(
+        self,
+        data: List[Dict[str, str]],
+        tokenizer: PreTrainedTokenizer,
+        prompt_key: str = "prompt",
+        chosen_key: str = "chosen",
+        rejected_key: str = "rejected",
+    ):
+        self._chosen_data = []
+        self._rejected_data = []
+
+        for d in data:
+            self._chosen_data.append(d[chosen_key])
+            self._rejected_data.append(d[rejected_key])
+
+    def __getitem__(self, idx: int):
+        return {"chosen": self._chosen_data[idx], "rejected": self._rejected_data[idx]}
+
+    def __len__(self):
+        return len(self._chosen_data)
+
+    def process(self, d):
+        return d
+
+
 class DPODataset:
     def __init__(
         self,

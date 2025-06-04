@@ -354,7 +354,6 @@ def train_dpo(
                     f"Val accuracy {val_metrics['accuracies']:.3f}, "
                     f"Val margin {val_metrics['margins']:.3f}, "
                     f"Val took {val_time:.3f}s",
-                    flush=True,
                 )
 
             if training_callback is not None:
