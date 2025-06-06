@@ -16,10 +16,11 @@ from mlx_lm.tuner.callbacks import WandBCallback
 from mlx_optimizers import Muon, QHAdam
 
 from .trainer.grpo_reward_functions import get_reward_function, get_default_reward_functions, list_available_reward_functions
-from .trainer.online_dpo_trainer import  OnlineDPOandXPOTrainingArgs, evaluate_online_dpo, train_online_dpo
+from .trainer.online_dpo_trainer import  OnlineDPOTrainingArgs, evaluate_online_dpo, train_online_dpo
 from .trainer.sft_trainer import SFTTrainingArgs, TrainingCallback, evaluate_sft, train_sft
 from .trainer.grpo_trainer import GRPOTrainingArgs, evaluate_grpo, train_grpo
 from .trainer.orpo_trainer import ORPOTrainingArgs, evaluate_orpo, train_orpo
+from .trainer.xpo_trainer import  XPOTrainingArgs, evaluate_xpo, train_xpo
 from .trainer.dpo_trainer import DPOTrainingArgs, evaluate_dpo, train_dpo
 from .trainer.cpo_trainer import CPOTrainingArgs, evaluate_cpo, train_cpo
 from .trainer.datasets import CacheDataset, load_dataset
@@ -486,8 +487,44 @@ def train_model(
             training_callback=training_callback,
         )
     
-    elif args.train_mode in ["online_dpo", "xpo"]:
-        dpo_training_args = OnlineDPOandXPOTrainingArgs(
+    elif args.train_mode == "online_dpo":
+        online_dpo_training_args = OnlineDPOTrainingArgs(
+            batch_size=args.batch_size,
+            iters=args.iters,
+            val_batches=args.val_batches,
+            steps_per_report=args.steps_per_report,
+            steps_per_eval=args.steps_per_eval,
+            steps_per_save=args.save_every,
+            adapter_file=adapter_file,
+            max_seq_length=args.max_seq_length,
+            grad_checkpoint=args.grad_checkpoint,
+            beta=args.beta,
+            loss_type=args.dpo_cpo_loss_type,
+            delta=args.delta,
+            reference_model_path=args.reference_model_path,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            judge=args.judge,
+        )
+
+        print("Loading pretrained reference model")
+        if args.reference_model_path:
+            reference_model, _ = load(args.reference_model_path)
+        else:
+            reference_model, _ = load(args.model)
+
+        train_online_dpo(
+            model=model,
+            tokenizer=tokenizer,
+            ref_model=reference_model.freeze(),
+            optimizer=opt,
+            train_dataset=CacheDataset(train_set),
+            val_dataset=CacheDataset(valid_set),
+            args=online_dpo_training_args,
+            training_callback=training_callback,
+        )
+
+    elif args.train_mode == "xpo":
+        xpo_training_args = XPOTrainingArgs(
             batch_size=args.batch_size,
             iters=args.iters,
             val_batches=args.val_batches,
@@ -519,7 +556,7 @@ def train_model(
             optimizer=opt,
             train_dataset=CacheDataset(train_set),
             val_dataset=CacheDataset(valid_set),
-            args=dpo_training_args,
+            args=xpo_training_args,
             training_callback=training_callback,
         )
     
@@ -681,7 +718,7 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
         for metric_name, metric_value in test_metrics.items():
             print(f"  {metric_name}: {float(metric_value):.3f}")
 
-    elif args.train_mode in ["online_dpo", "xpo"]:
+    elif args.train_mode == "online_dpo":
         if args.reference_model_path:
             reference_model, _ = load(args.reference_model_path)
         else:
@@ -699,6 +736,27 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
             loss_type=args.dpo_cpo_loss_type,
             judge=args.judge,
             max_tokens=args.max_completion_length,
+        )
+    
+    elif args.train_mode == "xpo":
+        if args.reference_model_path:
+            reference_model, _ = load(args.reference_model_path)
+        else:
+            reference_model, _ = load(args.model)
+
+        test_loss, _, _, test_metrics = evaluate_xpo(
+            model=model,
+            ref_model=reference_model.freeze(),
+            dataset=test_set,
+            batch_size=args.batch_size,
+            num_batches=args.test_batches,
+            max_seq_length=args.max_seq_length,
+            beta=args.beta,
+            delta=args.delta,
+            loss_type=args.dpo_cpo_loss_type,
+            judge=args.judge,
+            max_tokens=args.max_completion_length,
+            alpha=args.alpha,
         )
     
     elif args.train_mode == "cpo":

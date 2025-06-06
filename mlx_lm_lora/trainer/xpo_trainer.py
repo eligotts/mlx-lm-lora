@@ -1,23 +1,18 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union
 from tqdm import tqdm
 import time
-
-from transformers import PreTrainedTokenizer
 
 from mlx.nn.utils import average_gradients
 from mlx.utils import tree_flatten
 
 from mlx_lm.tuner.callbacks import TrainingCallback
-from mlx_lm.tokenizer_utils import TokenizerWrapper
-from mlx_lm.sample_utils import make_sampler
-from mlx_lm.generate import generate
 from mlx_lm.utils import load
 
-from .sft_trainer import SFTTrainingArgs, grad_checkpoint
 from .judge import LLMPairwiseJudge, HumanPairwiseJudge
+from .online_dpo_trainer import OnlineDPOTrainingArgs, evaluate_online_dpo, train_online_dpo, generate_for_online_dpo, compute_score
 from .dpo_trainer import get_token_scores
+from .sft_trainer import grad_checkpoint
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -25,72 +20,16 @@ import numpy as np
 
 
 @dataclass
-class OnlineDPOTrainingArgs(SFTTrainingArgs):
-    beta: float = field(
-        default=0.1, metadata={"help": "Temperature parameter for DPO training."}
-    )
-    loss_type: str = field(
-        default="sigmoid",
-        metadata={"help": "DPO loss type: 'sigmoid', 'hinge', 'ipo', or 'dpop'."},
-    )
-    delta: float = field(
-        default=50.0, metadata={"help": "Delta parameter for DPOP loss type."}
-    )
-    judge: str = field(
-        default="human",
-        metadata={"help": "What LLM to use as the judge, if 'human' empty, it's going to be you (human)."}
-    )
-    max_completion_length: int = field(
-        default=512, metadata={"help": "Number of Generations."}
-    )
-    reference_model_path: str = field(
-        default=None,
+class XPOTrainingArgs(OnlineDPOTrainingArgs):
+    alpha: list[float] = field(
+        default=lambda: [1e-5],
         metadata={
-            "help": "Path to reference model weights. If None, uses the same model."
-        },
+            "help": "Weight of the XPO loss term. If a list of floats is provided then the alpha is selected for each new epoch and the last alpha is used for the rest of the epochs."
+        }
     )
 
 
-def generate_for_online_dpo(
-    model: nn.Module,
-    tokenizer: Union[PreTrainedTokenizer, TokenizerWrapper],
-    prompts,
-    max_tokens: int = 512
-) -> list[list[str]]:
-    completions = []
-
-    sampler = make_sampler(
-        0.7,
-        40,
-        # args.min_p,
-        # args.min_tokens_to_keep,
-        # top_k=args.top_k,
-        # xtc_probability=args.xtc_probability,
-        # xtc_threshold=args.xtc_threshold,
-        # xtc_special_tokens=tokenizer.encode("\n") + list(tokenizer.eos_token_ids),
-    )
-
-    for prompt in prompts:
-        # Convert prompt tokens back to text if needed
-        if isinstance(prompt, list):
-            prompt_text = tokenizer.decode(prompt)
-        else:
-            prompt_text = prompt
-            
-        generated_1 = generate(model, tokenizer, prompt_text, max_tokens=max_tokens, sampler=sampler)
-        generated_2 = generate(model, tokenizer, prompt_text, max_tokens=max_tokens, sampler=sampler)
-        completions.append([generated_1, generated_2])
-    return completions
-
-
-def compute_score(scores, mask, loss_type):
-    if isinstance(mask, list):
-        mask = mx.array([m.sum() if hasattr(m, 'sum') else m for m in mask])
-    token_count = mask.sum(-1) if hasattr(mask, 'sum') else mask
-    return scores.sum(-1) / token_count if loss_type == "ipo" else scores.sum(-1)
-
-
-def online_dpo_loss(
+def xpo_loss(
     policy_chosen_score: mx.array,
     policy_rejected_score: mx.array,
     reference_chosen_score: mx.array,
@@ -100,26 +39,42 @@ def online_dpo_loss(
     beta: float,
     delta: float,
     loss_type: str = "sigmoid",
+    alpha: float = 0.0,  # Add alpha parameter
 ):
     # Preference logits
     logits = (policy_chosen_score - policy_rejected_score) - \
              (reference_chosen_score - reference_rejected_score)
 
-    # Loss calculation
+    # Standard DPO Loss calculation
     if loss_type == "sigmoid":
-        losses = -nn.log_sigmoid(beta * logits)
+        dpo_losses = -nn.log_sigmoid(beta * logits)
     elif loss_type == "hinge":
-        losses = nn.relu(1 - beta * logits)
+        dpo_losses = nn.relu(1 - beta * logits)
     elif loss_type == "ipo":
-        losses = (logits - 1 / (2 * beta)) ** 2
+        dpo_losses = (logits - 1 / (2 * beta)) ** 2
     elif loss_type == "dpop":
         penalty = mx.maximum(
             mx.zeros_like(policy_chosen_score),
             reference_chosen_score - policy_chosen_score,
         )
-        losses = -(nn.log_sigmoid(beta * logits) - delta * penalty)
+        dpo_losses = -(nn.log_sigmoid(beta * logits) - delta * penalty)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
+
+    # XPO Exploration Bonus
+    if alpha > 0:
+        # Compute KL divergence between policy and reference for exploration
+        # KL(π || π_ref) = log(π) - log(π_ref)
+        chosen_kl = policy_chosen_score - reference_chosen_score
+        rejected_kl = policy_rejected_score - reference_rejected_score
+        
+        # Exploration bonus encourages deviation from reference model
+        exploration_bonus = alpha * (chosen_kl + rejected_kl)
+        
+        # Combine DPO loss with exploration bonus
+        losses = dpo_losses - exploration_bonus
+    else:
+        losses = dpo_losses
 
     # Token counts and rewards
     num_chosen_tokens = chosen_masks.sum(-1) if hasattr(chosen_masks, 'sum') else chosen_masks
@@ -139,6 +94,12 @@ def online_dpo_loss(
         "rejected_logits_mean": mx.mean(policy_rejected_score),
         "chosen_logits_mean": mx.mean(policy_chosen_score),
     }
+    
+    # Add XPO-specific metrics
+    if alpha > 0:
+        metrics["exploration_bonus"] = mx.mean(exploration_bonus)
+        metrics["chosen_kl"] = mx.mean(chosen_kl)
+        metrics["rejected_kl"] = mx.mean(rejected_kl)
 
     mx.clear_cache()
     return mx.mean(losses), reward, num_tokens, metrics
@@ -172,7 +133,7 @@ def iterate_online_dpo_batches(dataset, batch_size, max_seq_length, train=False)
             break
 
 
-def evaluate_online_dpo(
+def evaluate_xpo(
     model,
     ref_model,
     dataset,
@@ -182,7 +143,8 @@ def evaluate_online_dpo(
     delta: float,
     max_seq_length,
     loss_type,
-    loss_fn: callable = online_dpo_loss,
+    alpha: float,
+    loss_fn: callable = xpo_loss,
     judge: str = None,
     tokenizer=None,
     max_tokens: int = 512
@@ -286,6 +248,7 @@ def evaluate_online_dpo(
             loss_type=loss_type,
             beta=beta,
             delta=delta,
+            alpha=alpha,
         )
         
         all_losses += loss_value * toks
@@ -314,18 +277,18 @@ def evaluate_online_dpo(
     return avg_loss, avg_rewards, ntokens, avg_metrics
 
 
-def train_online_dpo(
+def train_xpo(
     model,
     ref_model,
     tokenizer,
     optimizer,
     train_dataset,
     val_dataset,
-    args: OnlineDPOTrainingArgs = OnlineDPOTrainingArgs(),
-    loss_fn: callable = online_dpo_loss,
+    args: XPOTrainingArgs = XPOTrainingArgs(),
+    loss_fn: callable = xpo_loss,
     training_callback: TrainingCallback = None,
 ):
-    print(f"Starting Online DPO training..., iters: {args.iters}")
+    print(f"Starting XPO training..., iters: {args.iters}")
     world = mx.distributed.init()
     world_size = world.size()
     rank = world.rank()
@@ -337,7 +300,7 @@ def train_online_dpo(
 
     state = [model.state, optimizer.state]
 
-    def step(batch):
+    def step(batch, current_alpha):
         prompts, prompt_texts = batch
         
         # Generate completions for each prompt
@@ -421,7 +384,7 @@ def train_online_dpo(
         (lvalue, reward, toks, metrics), grad = loss_value_and_grad(
             policy_chosen_score, policy_rejected_score, 
             reference_chosen_logprobs, reference_rejected_logprobs, 
-            chosen_mask_counts, rejected_mask_counts
+            chosen_mask_counts, rejected_mask_counts, current_alpha
         )
         
         if (it + 1) % args.gradient_accumulation_steps == 0:
@@ -430,7 +393,7 @@ def train_online_dpo(
 
         return (lvalue / args.gradient_accumulation_steps), toks, metrics
 
-    def loss_wrapper(policy_chosen_score, policy_rejected_score, reference_chosen_score, reference_rejected_score, chosen_masks, rejected_masks):
+    def loss_wrapper(policy_chosen_score, policy_rejected_score, reference_chosen_score, reference_rejected_score, chosen_masks, rejected_masks, alpha):
         return loss_fn(
             policy_chosen_score=policy_chosen_score,
             policy_rejected_score=policy_rejected_score,
@@ -441,6 +404,7 @@ def train_online_dpo(
             beta=args.beta,
             delta=args.delta,
             loss_type=args.loss_type,
+            alpha=alpha,
         )
 
     loss_value_and_grad = nn.value_and_grad(model, loss_wrapper)
@@ -463,6 +427,8 @@ def train_online_dpo(
 
     pbar = tqdm(range(1, args.iters + 1), desc="Training", disable=rank != 0)
     for it in pbar:
+        current_alpha = get_current_alpha(it, args.iters, args.alpha)
+
         batch = next(iterate_online_dpo_batches(
             dataset=train_dataset,
             batch_size=args.batch_size,
@@ -512,7 +478,7 @@ def train_online_dpo(
 
             start = time.perf_counter()
 
-        lvalue, reward, toks, metrics = step(batch)
+        lvalue, reward, toks, metrics = step(batch, current_alpha)
         losses += lvalue
         rewards += reward
         n_tokens += toks
