@@ -48,7 +48,6 @@ class PreferenceDataset:
         self,
         data: List[Dict[str, str]],
         tokenizer: PreTrainedTokenizer,
-        prompt_key: str = "prompt",
         chosen_key: str = "chosen",
         rejected_key: str = "rejected",
     ):
@@ -56,8 +55,8 @@ class PreferenceDataset:
         self._rejected_data = []
 
         for d in data:
-            self._chosen_data.append(d[chosen_key])
-            self._rejected_data.append(d[rejected_key])
+            self._chosen_data.append(tokenizer.encode(d[chosen_key]))
+            self._rejected_data.append(tokenizer.encode(rejected_key))
 
     def __getitem__(self, idx: int):
         return {"chosen": self._chosen_data[idx], "rejected": self._rejected_data[idx]}
@@ -67,6 +66,28 @@ class PreferenceDataset:
 
     def process(self, d):
         return d
+    
+
+class PromptDataset:
+    def __init__(
+        self,
+        data: List[Dict[str, str]],
+        tokenizer: PreTrainedTokenizer,
+        prompt_key: str = "prompt",
+    ):
+        self._data = data
+        self.chat_key = prompt_key
+        self.tokenizer = tokenizer
+
+    def process(self, d):
+        messages = d[self.chat_key]
+        return self.tokenizer.apply_chat_template(messages)
+
+    def __getitem__(self, idx: int):
+        return self._data[idx]
+
+    def __len__(self):
+        return len(self._data)
 
 
 class DPODataset:

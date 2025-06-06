@@ -630,7 +630,7 @@ def train_grpo(
             batch_size=args.batch_size,
         )
 
-        (loss, toks, metrics), grad = loss_value_and_grad(
+        (lvalue, toks, metrics), grad = loss_value_and_grad(
             model,
             tokenizer=tokenizer,
             batch=(prompt_tokens, targets, prompt_lens, target_lens, type_info),
@@ -649,7 +649,7 @@ def train_grpo(
             grad = average_gradients(grad)
             optimizer.update(model, grad)
 
-        return (loss / args.gradient_accumulation_steps), toks, metrics
+        return (lvalue / args.gradient_accumulation_steps), toks, metrics
 
     loss_value_and_grad = nn.value_and_grad(model, loss_fn)
 
