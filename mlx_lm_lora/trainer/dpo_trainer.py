@@ -1,8 +1,6 @@
 from dataclasses import dataclass, field
-from functools import partial
 from pathlib import Path
 import time
-from typing import Optional, List, Tuple, Dict, Any
 
 from mlx.nn.utils import average_gradients
 from mlx.utils import tree_flatten

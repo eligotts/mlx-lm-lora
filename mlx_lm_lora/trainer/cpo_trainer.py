@@ -209,7 +209,6 @@ def train_cpo(
     args: CPOTrainingArgs = CPOTrainingArgs(),
     loss_fn: callable = cpo_loss,
     training_callback: TrainingCallback = None,
-    loss_type="sigmoid",
 ):
     mx.set_wired_limit(mx.metal.device_info()["max_recommended_working_set_size"])
     print(f"Starting training..., iters: {args.iters}")
@@ -230,8 +229,8 @@ def train_cpo(
         policy_chosen_scores = get_token_scores(model, chosen, chosen_masks)
         policy_rejected_scores = get_token_scores(model, rejected, rejected_masks)
 
-        policy_chosen_score = compute_score(policy_chosen_scores, chosen_masks, loss_type)
-        policy_rejected_score = compute_score(policy_rejected_scores, rejected_masks, loss_type)
+        policy_chosen_score = compute_score(policy_chosen_scores, chosen_masks, args.loss_type)
+        policy_rejected_score = compute_score(policy_rejected_scores, rejected_masks, args.loss_type)
 
         (lvalue, reward, toks, metrics), grad = loss_value_and_grad(
             policy_chosen_score, policy_rejected_score, chosen_masks=chosen_masks, rejected_masks=rejected_masks
@@ -251,7 +250,7 @@ def train_cpo(
             rejected_masks=rejected_masks,
             beta=args.beta,
             delta=args.delta,
-            loss_type=loss_type,
+            loss_type=args.loss_type,
         )
 
     loss_value_and_grad = nn.value_and_grad(model, loss_wrapper)
@@ -290,7 +289,7 @@ def train_cpo(
                 max_seq_length=args.max_seq_length,
                 beta=args.beta,
                 delta=args.delta,
-                loss_type=loss_type,
+                loss_type=args.loss_type,
                 loss_fn=loss_fn,
             )
             val_time = time.perf_counter() - stop

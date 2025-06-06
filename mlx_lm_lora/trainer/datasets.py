@@ -81,7 +81,7 @@ class PromptDataset:
 
     def process(self, d):
         messages = d[self.chat_key]
-        return self.tokenizer.apply_chat_template(messages)
+        return {"prompt": self.tokenizer.apply_chat_template(messages, add_generation_prompt=True), "prompt_text": self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)}
 
     def __getitem__(self, idx: int):
         return self._data[idx]
@@ -119,8 +119,8 @@ class DPODataset:
                 {"role": "assistant", "content": d[rejected_key]}
             ]
 
-            self._chosen_data.append(tokenizer.apply_chat_template(chosen_messages))
-            self._rejected_data.append(tokenizer.apply_chat_template(rejected_messages))
+            self._chosen_data.append(tokenizer.apply_chat_template(chosen_messages, add_generation_prompt=True))
+            self._rejected_data.append(tokenizer.apply_chat_template(rejected_messages, add_generation_prompt=True))
 
     def __getitem__(self, idx: int):
         return {"chosen": self._chosen_data[idx], "rejected": self._rejected_data[idx]}
@@ -193,8 +193,8 @@ class ORPODataset:
                 elif isinstance(d[rejected_key], list):
                     rejected_messages.extend(d[rejected_key])
 
-                chosen_text = tokenizer.apply_chat_template(chosen_messages)
-                rejected_text = tokenizer.apply_chat_template(rejected_messages)
+                chosen_text = tokenizer.apply_chat_template(chosen_messages, add_generation_prompt=True)
+                rejected_text = tokenizer.apply_chat_template(rejected_messages, add_generation_prompt=True)
 
             else:
                 chosen_content = self._extract_content(d[chosen_key])
@@ -422,10 +422,8 @@ def create_dataset(
     preference_score_feature = getattr(config, "preference_score_feature", "preference_score")
 
     # For GRPO
-    use_prompt = getattr(config, "use_prompt", "normal")
     type_feature = getattr(config, "type_feature", "type")
     answer_feature = getattr(config, "answer_feature", "answer")
-    use_chat_template = getattr(config, "use_chat_template", "normal")
 
     sample = data[0]
 
@@ -442,7 +440,7 @@ def create_dataset(
             )
         else:
             raise ValueError("Unsupported data format for ORPO training.")
-    elif train_mode == "dpo" or train_mode == "cpo":
+    elif train_mode in ["dpo", "cpo"]:
         if chosen_feature in sample and rejected_feature in sample:
             return DPODataset(
                 data=data,
@@ -454,18 +452,27 @@ def create_dataset(
                 )
         else:
             raise ValueError("Unsupported data format for DPO training.")
-    elif train_mode == "grpo":
-        if answer_feature in sample and prompt_feature in sample:
-            return GRPODataset(
+    elif train_mode in ["dpo", "cpo"]:
+        if chosen_feature in sample and rejected_feature in sample:
+            return DPODataset(
                 data=data,
                 tokenizer=tokenizer,
                 prompt_key=prompt_feature,
-                answer_key=answer_feature,
                 system_key=system_feature,
-                type_key=type_feature,
+                chosen_key=chosen_feature,
+                rejected_key=rejected_feature
+                )
+        else:
+            raise ValueError("Unsupported data format for Online DPO or CPO training.")
+    elif train_mode in ["online_dpo", "xpo"]:
+        if prompt_feature in sample:
+            return PromptDataset(
+                data=data,
+                tokenizer=tokenizer,
+                prompt_key=prompt_feature,
             )
         else:
-            raise ValueError("Unsupported data format for GRPO training.")
+            raise ValueError("Unsupported data format for Online DPO or XPO training.")
     elif train_mode == "sft":
         if prompt_feature in sample and completion_feature in sample:
             return CompletionsDataset(

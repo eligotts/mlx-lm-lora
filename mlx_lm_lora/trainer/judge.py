@@ -1,6 +1,8 @@
 from mlx_lm.generate import generate
+from tqdm import tqdm
+
 import mlx.nn as nn
-import mlx as mx
+import numpy as np
 
 from typing import Optional
 
@@ -52,9 +54,6 @@ DEFAULT_PAIRWISE_HUMAN_PROMPT = '''## Instruction
     }}
 }}
 
-## Task
-
-Reply with the identifier (0, 1) of the best model.
 '''
 
 
@@ -71,7 +70,7 @@ class LLMPairwiseJudge():
 
     def judge(self, prompts: list[str], completions: list[list[str]], shuffle_order: bool = True) -> list[int]:
         if shuffle_order:
-            flip_mask = mx.random.randint(0, 2, (len(prompts),)).astype(bool)
+            flip_mask = np.random.randint(0, 2, (len(prompts),)).astype(bool)
             completions = [pair[::-1] if flip else pair for flip, pair in zip(flip_mask, completions)]
 
         def get_rank(prompt, candidates):
@@ -92,7 +91,7 @@ class LLMPairwiseJudge():
             if response in ["0", "1"]:
                 return int(response)
             else:
-                print(f"Invalid response from the judge model: '{response}'. Returning -1.")
+                tqdm.write(f"Invalid response from the judge model: '{response}'. Returning -1.")
                 return -1
 
         ranks = []
@@ -111,16 +110,17 @@ class HumanPairwiseJudge():
 
     def judge(self, prompts: list[str], completions: list[list[str]], shuffle_order: bool = True) -> list[int]:
         if shuffle_order:
-            flip_mask = mx.random.randint(0, 2, (len(prompts),)).astype(bool)
+            flip_mask = np.random.randint(0, 2, (len(prompts),)).astype(bool)
             completions = [pair[::-1] if flip else pair for flip, pair in zip(flip_mask, completions)]
 
         def get_rank(prompt, candidates):
             content = self.prompt.format(prompt=prompt, response0=candidates[0], response1=candidates[1])
-            response = input(f"Choose with one is better:\n{content}")
+            tqdm.write(content)
+            response = input(f"\nChoose with one is better (0, 1): ")
             if response in ["0", "1"]:
                 return int(response)
             else:
-                print(f"Invalid response from the judge model: '{response}'. Returning -1.")
+                tqdm.write(f"Invalid response from the judge model: '{response}'. Returning -1.")
                 return -1
 
         ranks = []
