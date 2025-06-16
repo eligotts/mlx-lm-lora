@@ -486,6 +486,7 @@ def train_online_dpo(
                 beta=args.beta,
                 delta=args.delta,
                 loss_type=args.loss_type,
+                judge_config=judge_config,
                 judge_model=judge_model,
                 judge_tokenizer=judge_tokenizer,
                 max_tokens=args.max_completion_length,

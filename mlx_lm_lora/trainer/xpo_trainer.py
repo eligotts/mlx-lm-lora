@@ -7,10 +7,9 @@ from mlx.nn.utils import average_gradients
 from mlx.utils import tree_flatten
 
 from mlx_lm.tuner.callbacks import TrainingCallback
-from mlx_lm.utils import load
 
+from .online_dpo_trainer import OnlineDPOTrainingArgs, generate_for_online_dpo, compute_score
 from .judge import LLMPairwiseJudge, HumanPairwiseJudge
-from .online_dpo_trainer import OnlineDPOTrainingArgs, evaluate_online_dpo, train_online_dpo, generate_for_online_dpo, compute_score
 from .dpo_trainer import get_token_scores
 from .sft_trainer import grad_checkpoint
 
@@ -449,7 +448,7 @@ def train_xpo(
         ))
         if it == 1 or it % args.steps_per_eval == 0 or it == args.iters:
             stop = time.perf_counter()
-            val_loss, val_rewards, val_ntokens, val_metrics = evaluate_online_dpo(
+            val_loss, val_rewards, val_ntokens, val_metrics = evaluate_xpo(
                 model=model,
                 ref_model=ref_model,
                 tokenizer=tokenizer,
@@ -460,7 +459,9 @@ def train_xpo(
                 loss_fn=loss_fn,
                 beta=args.beta,
                 delta=args.delta,
+                alpha=current_alpha,
                 loss_type=args.loss_type,
+                judge_config=judge_config,
                 judge_model=judge_model,
                 judge_tokenizer=judge_tokenizer,
                 max_tokens=args.max_completion_length,
