@@ -54,10 +54,13 @@ CONFIG_DEFAULTS = {
     "model": "mlx_model",
     "train": True,
     "train_type": "lora",
+    "train_mode": "sft",
     "optimizer": "adam",
     "optimizer_config": {
         "adam": {},
         "adamw": {},
+        "muon": {},
+        "qhadam": {},
     },
     "data": "data/",
     "seed": 0,
