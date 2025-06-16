@@ -17,6 +17,17 @@ Train Large Language Models localy on Apple Silicon using MLX. Training works wi
 - MiniCPM, MiniCPM3
 - and more ...
 
+### 📓 Notebooks Examples
+
+* [🧪 LoRA Fine-Tuning (SFT)](examples/custom_sft_lora.ipynb) – Shows how to fine-tune a model using LoRA on a standard SFT dataset.
+* [🧠 Full-Precision SFT](examples/custom_sft.ipynb) – Uses full model weights instead of LoRA for supervised fine-tuning.
+* [⚖️ ORPO Training](examples/custom_orpo_lora.ipynb) – Monolithic preference optimization without the need for a reference model.
+* [📈 CPO Training](examples/custom_cpo_lora.ipynb) – Contrastive fine-tuning to improve model decision boundaries.
+* [👥 GRPO Training](examples/custom_grpo_lora.ipynb) – Group-based reinforcement training with multiple completions per prompt.
+* [🧬 Pretraining](examples/pretrain_fineweb-200k.ipynb) – Pretrains a language model from scratch using a 200k-sample subset of the FineWeb dataset.
+* [🚀 Training a model fully from scratch with Pre/Post-traininng](examples/qwen3_moe_from_scratch.ipynb) - Fully trains a Qwen3-MoE model from scratch, including both pretraining and preference-stage fine-tuning.
+
+
 ## Contents
 
 - [Install](#Install)
