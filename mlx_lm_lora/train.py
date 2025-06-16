@@ -581,6 +581,7 @@ def train_model(
             model=model,
             tokenizer=tokenizer,
             ref_model=reference_model.freeze(),
+            judge_config=args.judge_config,
             judge_model=judge_model,
             judge_tokenizer=judge_tokenizer,
             optimizer=opt,
