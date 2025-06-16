@@ -29,6 +29,15 @@ class XPOTrainingArgs(OnlineDPOTrainingArgs):
     )
 
 
+def get_current_alpha(step: int, total_steps: int, alpha_schedule: list[float]) -> float:
+    if len(alpha_schedule) == 1:
+        return alpha_schedule[0]
+
+    step_size = total_steps // len(alpha_schedule)
+    index = min(step // step_size, len(alpha_schedule) - 1)
+    return alpha_schedule[index]
+
+
 def xpo_loss(
     policy_chosen_score: mx.array,
     policy_rejected_score: mx.array,
@@ -145,7 +154,8 @@ def evaluate_xpo(
     loss_type,
     alpha: float,
     loss_fn: callable = xpo_loss,
-    judge: str = None,
+    judge_model: mx.array = None,
+    judge_tokenizer: mx.array = None,
     tokenizer=None,
     max_tokens: int = 512
 ):
@@ -168,11 +178,10 @@ def evaluate_xpo(
         
         completions = generate_for_online_dpo(model, tokenizer, prompts, max_tokens=max_tokens)
         
-        if judge == "human":
+        if judge_model == "human":
             judger = HumanPairwiseJudge()
             judged = judger.judge(prompt_texts, completions=completions)
         else:
-            judge_model, judge_tokenizer = load(judge)
             judger = LLMPairwiseJudge(model=judge_model, tokenizer=judge_tokenizer)
             judged = judger.judge(prompt_texts, completions=completions)
         
@@ -285,6 +294,8 @@ def train_xpo(
     train_dataset,
     val_dataset,
     args: XPOTrainingArgs = XPOTrainingArgs(),
+    judge_model: mx.array = None,
+    judge_tokenizer: mx.array = None,
     loss_fn: callable = xpo_loss,
     training_callback: TrainingCallback = None,
 ):
@@ -307,11 +318,10 @@ def train_xpo(
         completions = generate_for_online_dpo(model, tokenizer, prompts, max_tokens=args.max_completion_length)
         
         # Judge the completions
-        if args.judge == "human":
+        if judge_model == "human":
             judger = HumanPairwiseJudge()
             judged = judger.judge(prompt_texts, completions=completions)
         else:
-            judge_model, judge_tokenizer = load(args.judge)
             judger = LLMPairwiseJudge(model=judge_model, tokenizer=judge_tokenizer)
             judged = judger.judge(prompt_texts, completions=completions)
         
@@ -449,7 +459,8 @@ def train_xpo(
                 beta=args.beta,
                 delta=args.delta,
                 loss_type=args.loss_type,
-                judge=args.judge,
+                judge_model=judge_model,
+                judge_tokenizer=judge_tokenizer,
                 max_tokens=args.max_completion_length,
             )
             val_time = time.perf_counter() - stop

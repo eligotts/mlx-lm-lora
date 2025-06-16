@@ -63,9 +63,11 @@ class LLMPairwiseJudge():
         model: nn.Module,
         tokenizer: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        enable_reasoning: bool = False
     ):
         self.model = model
         self.tokenizer = tokenizer
+        self.enable_reasoning = enable_reasoning
         self.system_prompt = system_prompt or DEFAULT_PAIRWISE_SYSTEM_PROMPT
 
     def judge(self, prompts: list[str], completions: list[list[str]], shuffle_order: bool = True) -> list[int]:
@@ -80,6 +82,7 @@ class LLMPairwiseJudge():
                     {"role": "user", "content": content}
                 ],
                 tokenize=False,
+                enable_thinking=self.enable_reasoning,
                 add_generation_prompt=True,
             )
             response = generate(

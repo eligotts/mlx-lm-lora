@@ -12,7 +12,9 @@ import mlx.optimizers as optim
 import mlx.core as mx
 import mlx.nn as nn
 
+from mlx_lm.tokenizer_utils import load_tokenizer
 from mlx_lm.tuner.callbacks import WandBCallback
+from mlx_lm.utils import load, save_config
 from mlx_optimizers import Muon, QHAdam
 
 from .trainer.grpo_reward_functions import get_reward_function, get_default_reward_functions, list_available_reward_functions
@@ -31,7 +33,6 @@ from mlx_lm.tuner.utils import (
     load_adapters,
     print_trainable_parameters,
 )
-from mlx_lm.utils import load, save_config
 
 yaml_loader = yaml.SafeLoader
 yaml_loader.add_implicit_resolver(
@@ -512,10 +513,22 @@ def train_model(
         else:
             reference_model, _ = load(args.model)
 
+        print("Loading pretrained judge model")
+        if args.judge:
+            if args.judge == args.reference_model_path:
+                judge_model = reference_model
+                judge_tokenizer = load_tokenizer(args.judge)
+            else:
+                judge_model, judge_tokenizer = load(args.judge)
+        else:
+            judge_model, judge_tokenizer = load(args.judge)
+
         train_online_dpo(
             model=model,
             tokenizer=tokenizer,
             ref_model=reference_model.freeze(),
+            judge_model=judge_model,
+            judge_tokenizer=judge_tokenizer,
             optimizer=opt,
             train_dataset=CacheDataset(train_set),
             val_dataset=CacheDataset(valid_set),
@@ -549,10 +562,22 @@ def train_model(
         else:
             reference_model, _ = load(args.model)
 
+        print("Loading pretrained judge model")
+        if args.judge:
+            if args.judge == args.reference_model_path:
+                judge_model = reference_model
+                judge_tokenizer = load_tokenizer(args.judge)
+            else:
+                judge_model, judge_tokenizer = load(args.judge)
+        else:
+            judge_model, judge_tokenizer = load(args.judge)
+
         train_online_dpo(
             model=model,
             tokenizer=tokenizer,
             ref_model=reference_model.freeze(),
+            judge_model=judge_model,
+            judge_tokenizer=judge_tokenizer,
             optimizer=opt,
             train_dataset=CacheDataset(train_set),
             val_dataset=CacheDataset(valid_set),
