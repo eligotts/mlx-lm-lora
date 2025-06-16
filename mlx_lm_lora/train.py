@@ -572,7 +572,7 @@ def train_model(
         else:
             judge_model, judge_tokenizer = load(args.judge)
 
-        train_online_dpo(
+        train_xpo(
             model=model,
             tokenizer=tokenizer,
             ref_model=reference_model.freeze(),
