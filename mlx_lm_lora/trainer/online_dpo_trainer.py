@@ -182,6 +182,7 @@ def evaluate_online_dpo(
     delta: float,
     max_seq_length,
     loss_type,
+    judge_config,
     loss_fn: callable = online_dpo_loss,
     judge_model: mx.array = None,
     judge_tokenizer: mx.array = None,
@@ -211,7 +212,7 @@ def evaluate_online_dpo(
             judger = HumanPairwiseJudge()
             judged = judger.judge(prompt_texts, completions=completions)
         else:
-            judger = LLMPairwiseJudge(model=judge_model, tokenizer=judge_tokenizer)
+            judger = LLMPairwiseJudge(model=judge_model, tokenizer=judge_tokenizer, system_prompt=judge_config.get("system_prompt", None))
             judged = judger.judge(prompt_texts, completions=completions)
         
         chosen = []
@@ -321,6 +322,7 @@ def train_online_dpo(
     optimizer,
     train_dataset,
     val_dataset,
+    judge_config,
     args: OnlineDPOTrainingArgs = OnlineDPOTrainingArgs(),
     judge_model: mx.array = None,
     judge_tokenizer: mx.array = None,
@@ -350,7 +352,7 @@ def train_online_dpo(
             judger = HumanPairwiseJudge()
             judged = judger.judge(prompt_texts, completions=completions)
         else:
-            judger = LLMPairwiseJudge(model=judge_model, tokenizer=judge_tokenizer)
+            judger = LLMPairwiseJudge(model=judge_model, tokenizer=judge_tokenizer, system_prompt=judge_config.get("system_prompt", None))
             judged = judger.judge(prompt_texts, completions=completions)
         
         # Process judged results to create chosen/rejected pairs

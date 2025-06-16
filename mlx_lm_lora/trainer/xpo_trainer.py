@@ -152,6 +152,7 @@ def evaluate_xpo(
     delta: float,
     max_seq_length,
     loss_type,
+    judge_config,
     alpha: float,
     loss_fn: callable = xpo_loss,
     judge_model: mx.array = None,
@@ -182,7 +183,7 @@ def evaluate_xpo(
             judger = HumanPairwiseJudge()
             judged = judger.judge(prompt_texts, completions=completions)
         else:
-            judger = LLMPairwiseJudge(model=judge_model, tokenizer=judge_tokenizer)
+            judger = LLMPairwiseJudge(model=judge_model, tokenizer=judge_tokenizer, system_prompt=judge_config.get("system_prompt", None))
             judged = judger.judge(prompt_texts, completions=completions)
         
         chosen = []
@@ -293,6 +294,7 @@ def train_xpo(
     optimizer,
     train_dataset,
     val_dataset,
+    judge_config,
     args: XPOTrainingArgs = XPOTrainingArgs(),
     judge_model: mx.array = None,
     judge_tokenizer: mx.array = None,
@@ -322,7 +324,7 @@ def train_xpo(
             judger = HumanPairwiseJudge()
             judged = judger.judge(prompt_texts, completions=completions)
         else:
-            judger = LLMPairwiseJudge(model=judge_model, tokenizer=judge_tokenizer)
+            judger = LLMPairwiseJudge(model=judge_model, tokenizer=judge_tokenizer, system_prompt=judge_config.get("system_prompt", None))
             judged = judger.judge(prompt_texts, completions=completions)
         
         # Process judged results to create chosen/rejected pairs

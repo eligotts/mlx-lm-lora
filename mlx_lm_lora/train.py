@@ -94,6 +94,7 @@ CONFIG_DEFAULTS = {
 
     # Online DPO & XPO
     "judge": None,
+    "judge_config": {},
     "alpha": 1e-5,
 
     # GRPO args
@@ -529,6 +530,7 @@ def train_model(
             ref_model=reference_model.freeze(),
             judge_model=judge_model,
             judge_tokenizer=judge_tokenizer,
+            judge_config=args.judge_config,
             optimizer=opt,
             train_dataset=CacheDataset(train_set),
             val_dataset=CacheDataset(valid_set),
