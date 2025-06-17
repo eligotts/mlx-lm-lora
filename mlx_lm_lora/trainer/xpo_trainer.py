@@ -101,6 +101,9 @@ def xpo_loss(
         "policy_chosen_logps": mx.mean(policy_chosen_score / num_chosen_tokens),
         "rejected_logits_mean": mx.mean(policy_rejected_score),
         "chosen_logits_mean": mx.mean(policy_chosen_score),
+        "exploration_bonus": 0,
+        "chosen_kl": 0,
+        "rejected_kl": 0,
     }
     
     # Add XPO-specific metrics
@@ -402,7 +405,7 @@ def train_xpo(
             grad = average_gradients(grad)
             optimizer.update(model, grad)
 
-        return (lvalue / args.gradient_accumulation_steps), toks, metrics
+        return (lvalue / args.gradient_accumulation_steps), reward, toks, metrics
 
     def loss_wrapper(policy_chosen_score, policy_rejected_score, reference_chosen_score, reference_rejected_score, chosen_masks, rejected_masks, alpha):
         return loss_fn(
@@ -432,6 +435,9 @@ def train_xpo(
         "policy_chosen_logps": 0,
         "rejected_logits_mean": 0,
         "chosen_logits_mean": 0,
+        "exploration_bonus": 0,
+        "chosen_kl": 0,
+        "rejected_kl": 0,
     }
 
     start = time.perf_counter()

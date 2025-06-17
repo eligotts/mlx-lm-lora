@@ -431,7 +431,7 @@ def train_online_dpo(
             grad = average_gradients(grad)
             optimizer.update(model, grad)
 
-        return (lvalue / args.gradient_accumulation_steps), toks, metrics
+        return (lvalue / args.gradient_accumulation_steps), reward, toks, metrics
 
     def loss_wrapper(policy_chosen_score, policy_rejected_score, reference_chosen_score, reference_rejected_score, chosen_masks, rejected_masks):
         return loss_fn(
