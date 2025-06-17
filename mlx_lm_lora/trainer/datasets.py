@@ -473,6 +473,18 @@ def create_dataset(
             )
         else:
             raise ValueError("Unsupported data format for Online DPO or XPO training.")
+    elif train_mode in ["grpo"]:
+        if prompt_feature in sample:
+            return GRPODataset(
+                data=data,
+                tokenizer=tokenizer,
+                prompt_key=prompt_feature,
+                answer_key=answer_feature,
+                system_key=system_feature,
+                type_key=type_feature,
+            )
+        else:
+            raise ValueError("Unsupported data format for Online GRPO training.")
     elif train_mode == "sft":
         if prompt_feature in sample and completion_feature in sample:
             return CompletionsDataset(
