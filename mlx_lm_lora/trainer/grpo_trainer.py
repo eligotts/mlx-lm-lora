@@ -561,7 +561,7 @@ def evaluate_grpo(
             ref_model=ref_model,
             temperature=temperature,
             max_tokens=max_tokens,
-            is_validation=False,
+            is_validation=True,
         )
 
         all_losses += losses * toks
