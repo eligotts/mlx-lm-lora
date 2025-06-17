@@ -86,7 +86,6 @@ def iterate_batches(
     max_seq_length,
     train=False,
 ):
-    # Sort by length:
     if isinstance(dataset, CacheDataset):
         len_fn = lambda idx: dataset.itemlen(idx)
     else:
@@ -98,13 +97,10 @@ def iterate_batches(
             f" examples but only has {len(dataset)}."
         )
 
-    # If running in distributed mode (N machines) then each one should skip N-1
-    # samples
     step = mx.distributed.init().size()
     if batch_size % step != 0:
         raise ValueError("The batch size must be divisible by the number of workers")
 
-    # Make the batches:
     batch_idx = [
         idx[i : i + batch_size : step]
         for i in range(0, len(idx) - batch_size + 1, batch_size)
@@ -120,7 +116,6 @@ def iterate_batches(
                 offsets = [0] * len(batch)
             lengths = [len(x) for x in batch]
 
-            # Pad to one plus nearest multiple of pad_to or the maximum length
             pad_to = 32
             max_length_in_batch = 1 + pad_to * ((max(lengths) + pad_to - 1) // pad_to)
             max_length_in_batch = min(max_length_in_batch, max_seq_length)
@@ -131,7 +126,7 @@ def iterate_batches(
                 truncated_length = min(lengths[j], max_seq_length)
                 batch_arr[j, :truncated_length] = batch[j][:truncated_length]
                 lengths[j] = (
-                    truncated_length  # Update lengths to match truncated lengths
+                    truncated_length
                 )
             batch = mx.array(batch_arr)
             yield batch, mx.array(list(zip(offsets, lengths)))
