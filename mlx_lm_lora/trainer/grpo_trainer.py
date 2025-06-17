@@ -437,25 +437,25 @@ def grpo_loss(
     }
 
     if is_validation and all_completion_texts:
-        print("\n=== Validation Sample Details ===")
+        tqdm.write("\n=== Validation Sample Details ===")
         last_prompt_idx = batch_indices[-1] if batch_indices else 0
         if last_prompt_idx < len(prompt_text):
-            print(f"\n📋 Raw Prompt:\n{prompt_text[last_prompt_idx]}")
-            print("\n" + "=" * 10 + "\n")
+            tqdm.write(f"\n📋 Raw Prompt:\n{prompt_text[last_prompt_idx]}")
+            tqdm.write("\n" + "=" * 10 + "\n")
             if last_prompt_idx < len(prompt_tokens):
                 actual_prompt = tokenizer.decode(prompt_tokens[last_prompt_idx])
-                print(f"\n🔄 Model Input:\n{actual_prompt}")
-                print("\n" + "=" * 10 + "\n")
-        print(f"\n📝 Generation:\n{all_completion_texts[-1]}")
-        print("\n" + "=" * 10 + "\n")
+                tqdm.write(f"\n🔄 Model Input:\n{actual_prompt}")
+                tqdm.write("\n" + "=" * 10 + "\n")
+        tqdm.write(f"\n📝 Generation:\n{all_completion_texts[-1]}")
+        tqdm.write("\n" + "=" * 10 + "\n")
         if last_prompt_idx < len(answer_text):
-            print(f"\n✅ Answer:\n{answer_text[last_prompt_idx]}")
-            print("\n" + "=" * 10 + "\n")
+            tqdm.write(f"\n✅ Answer:\n{answer_text[last_prompt_idx]}")
+            tqdm.write("\n" + "=" * 10 + "\n")
         if "r1_extract_xml_answer" in globals():
-            print(
+            tqdm.write(
                 f"\n🔍 Extracted Answer:\n{r1_extract_xml_answer(all_completion_texts[-1])}"
             )
-        print("\n" + "=" * 35 + "\n")
+        tqdm.write("\n" + "=" * 35 + "\n")
 
     mx.clear_cache()
 
@@ -561,7 +561,7 @@ def evaluate_grpo(
             ref_model=ref_model,
             temperature=temperature,
             max_tokens=max_tokens,
-            is_validation=True,
+            is_validation=False,
         )
 
         all_losses += losses * toks
@@ -605,12 +605,12 @@ def train_grpo(
     training_callback: TrainingCallback = None,
 ):
     mx.set_wired_limit(mx.metal.device_info()["max_recommended_working_set_size"])
-    print(f"Starting training..., iters: {args.iters}")
+    tqdm.write(f"Starting training..., iters: {args.iters}")
     world = mx.distributed.init()
     world_size = world.size()
     rank = world.rank()
     if world_size > 1:
-        print(f"Node {rank} of {world_size}")
+        tqdm.write(f"Node {rank} of {world_size}")
 
     if args.grad_checkpoint:
         grad_checkpoint(model.layers[0])
@@ -791,7 +791,7 @@ def train_grpo(
                 Path(args.adapter_file).parent / f"{it:07d}_adapters.safetensors"
             )
             mx.save_safetensors(str(checkpoint), adapter_weights)
-            print(
+            tqdm.write(
                 f"\n"
                 f"Iter {it}: Saved adapter weights to "
                 f"{args.adapter_file} and {checkpoint}."
@@ -799,4 +799,4 @@ def train_grpo(
 
     adapter_weights = dict(tree_flatten(model.trainable_parameters()))
     mx.save_safetensors(str(args.adapter_file), adapter_weights)
-    print(f"Saved final weights to {args.adapter_file}.")
+    tqdm.write(f"Saved final weights to {args.adapter_file}.")

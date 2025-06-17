@@ -329,12 +329,12 @@ def train_online_dpo(
     loss_fn: callable = online_dpo_loss,
     training_callback: TrainingCallback = None,
 ):
-    print(f"Starting Online DPO training..., iters: {args.iters}")
+    tqdm.write(f"Starting Online DPO training..., iters: {args.iters}")
     world = mx.distributed.init()
     world_size = world.size()
     rank = world.rank()
     if world_size > 1:
-        print(f"Node {rank} of {world_size}")
+        tqdm.write(f"Node {rank} of {world_size}")
 
     if args.grad_checkpoint:
         grad_checkpoint(model.layers[0])
@@ -580,7 +580,7 @@ def train_online_dpo(
                 Path(args.adapter_file).parent / f"{it:07d}_adapters.safetensors"
             )
             mx.save_safetensors(str(checkpoint), adapter_weights)
-            print(
+            tqdm.write(
                 f"Iter {it}: Saved adapter weights to "
                 f"{args.adapter_file} and {checkpoint}."
             )
@@ -588,4 +588,4 @@ def train_online_dpo(
     # Save final weights
     adapter_weights = dict(tree_flatten(model.trainable_parameters()))
     mx.save_safetensors(str(args.adapter_file), adapter_weights)
-    print(f"Saved final weights to {args.adapter_file}.")
+    tqdm.write(f"Saved final weights to {args.adapter_file}.")
