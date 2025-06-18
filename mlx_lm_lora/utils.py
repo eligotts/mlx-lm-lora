@@ -63,5 +63,5 @@ def fuse_model(
             raise ValueError(
                 f"Model type {model_type} not supported for GGUF conversion."
             )
-        weights = dict(tree_flatten(model.parameters()))  # Fixed: was model_obj, should be model
+        weights = dict(tree_flatten(model.parameters()))
         convert_to_gguf(save_path, weights, args, str(save_path_obj / gguf_path))
