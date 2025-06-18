@@ -26,6 +26,7 @@ from .trainer.xpo_trainer import  XPOTrainingArgs, evaluate_xpo, train_xpo
 from .trainer.dpo_trainer import DPOTrainingArgs, evaluate_dpo, train_dpo
 from .trainer.cpo_trainer import CPOTrainingArgs, evaluate_cpo, train_cpo
 from .trainer.datasets import CacheDataset, load_dataset
+from .utils import fuse_model
 
 from mlx_lm.tuner.utils import (
     build_schedule,
@@ -84,7 +85,9 @@ CONFIG_DEFAULTS = {
     "lr_schedule": None,
     "lora_parameters": {"rank": 8, "dropout": 0.0, "scale": 10.0},
     "mask_prompt": False,
-    "wandb": None,
+    "fuse": True,
+    "fuse_de_quantize": False,
+    "fuse_export_gguf": False,
 
     # ORPO args
     "beta": 0.1,
@@ -262,6 +265,24 @@ def build_parser():
         help="WandB project name to report training metrics. Disabled if None.",
     )
     parser.add_argument("--seed", type=int, help="The PRNG seed")
+    parser.add_argument(
+        "--fuse",
+        action="store_true",
+        help="Fuse and save the trained model.",
+        default=None,
+    )
+    parser.add_argument(
+        "--fuse-de-quantize",
+        action="store_true",
+        help="Fuse and save the raw trained model too.",
+        default=None,
+    )
+    parser.add_argument(
+        "--fuse-export-gguf",
+        action="store_true",
+        help="Fuse and save the gguf model too.",
+        default=None,
+    )
 
     # ORPO args
     parser.add_argument(
@@ -882,6 +903,17 @@ def run(args, training_callback: TrainingCallback = None):
     if args.test:
         print("Testing")
         evaluate_model(args, model, tokenizer, test_set)
+
+    if args.fuse:
+        print("Fusing model")
+        fuse_model(
+            model=model,
+            tokenizer=tokenizer,
+            save_path=args.adapter_path,
+            adapter_path=args.adapter_path,
+            de_quantize=args.de_quantize,
+            export_gguf=args.export_gguf,
+        )
 
 
 def main(args=None):
