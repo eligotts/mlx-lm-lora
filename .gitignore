@@ -144,3 +144,4 @@ test*.txt
 test*.jsonl
 .test*.jsonl.env
 
+*adapters*
