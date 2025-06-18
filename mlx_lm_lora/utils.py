@@ -4,7 +4,7 @@ from mlx.utils import tree_flatten, tree_unflatten
 
 from mlx_lm.gguf import convert_to_gguf
 from mlx_lm.tuner.utils import dequantize, load_adapters
-from .utils import (
+from mlx_lm.utils import (
     save_model,
     save_config,
 )
