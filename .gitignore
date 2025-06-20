@@ -141,7 +141,4 @@ dmypy.json
 test*.txt
 .test*.txt
 
-test*.jsonl
-.test*.jsonl.env
-
 *adapters*
