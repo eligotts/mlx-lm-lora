@@ -26,7 +26,7 @@ from .trainer.xpo_trainer import  XPOTrainingArgs, evaluate_xpo, train_xpo
 from .trainer.dpo_trainer import DPOTrainingArgs, evaluate_dpo, train_dpo
 from .trainer.cpo_trainer import CPOTrainingArgs, evaluate_cpo, train_cpo
 from .trainer.datasets import CacheDataset, load_dataset
-from .utils import fuse_model
+from .utils import fuse_and_save_model, from_pretrained
 
 from mlx_lm.tuner.utils import (
     build_schedule,
@@ -54,6 +54,9 @@ yaml_loader.add_implicit_resolver(
 CONFIG_DEFAULTS = {
     "model": "mlx_model",
     "train": True,
+    "load_in_4bits": False,
+    "load_in_6bits": False,
+    "load_in_8bits": False,
     "train_type": "lora",
     "train_mode": "sft",
     "optimizer": "adam",
@@ -154,6 +157,24 @@ def build_parser():
         "--train",
         action="store_true",
         help="Do training",
+        default=None,
+    )
+    parser.add_argument(
+        "--load-in-4bits",
+        action="store_true",
+        help="Load the model in 4-bit quantization.",
+        default=None,
+    )
+    parser.add_argument(
+        "--load-in-6bits",
+        action="store_true",
+        help="Load the model in 6-bit quantization.",
+        default=None,
+    )
+    parser.add_argument(
+        "--load-in-8bits",
+        action="store_true",
+        help="Load the model in 8-bit quantization.",
         default=None,
     )
     parser.add_argument(
@@ -884,8 +905,22 @@ def run(args, training_callback: TrainingCallback = None):
             wrapped_callback=training_callback,
         )
 
-    print("Loading pretrained model")
-    model, tokenizer = load(args.model)
+    # print("Loading pretrained model")
+    # model, tokenizer = load(args.model)
+
+    if args.load_in_4bits:
+        quanziation_config = {"bits": 4, "group_size": 64}
+    elif args.load_in_6bits:
+        quanziation_config = {"bits": 6, "group_size": 64}
+    elif args.load_in_8bits:
+        quanziation_config = {"bits": 8, "group_size": 64}
+    else:
+        quanziation_config = None
+
+    model, tokenizer = from_pretrained(
+        model=args.model,
+        quantized_load=quanziation_config,
+    )
 
     print("Loading datasets")
     train_set, valid_set, test_set = load_dataset(args, tokenizer)
@@ -906,7 +941,7 @@ def run(args, training_callback: TrainingCallback = None):
 
     if args.fuse:
         print("Fusing model")
-        fuse_model(
+        fuse_and_save_model(
             model=model,
             tokenizer=tokenizer,
             save_path=args.adapter_path,
