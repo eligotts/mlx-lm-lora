@@ -1,10 +1,10 @@
-from typing import Optional
+from typing import Optional, Tuple, Any
 from pathlib import Path
 
 from mlx.utils import tree_flatten, tree_unflatten
 
 from mlx_lm.gguf import convert_to_gguf
-from mlx_lm.tuner.utils import dequantize, load_adapters, print_trainable_parameters, linear_to_lora_layers
+from mlx_lm.tuner.utils import dequantize, load_adapters, linear_to_lora_layers
 from mlx_lm.utils import (
     save_model,
     save_config,
@@ -42,7 +42,7 @@ def fuse_and_save_model(
         print(f"Loading adapters from {adapter_path}")
         model = load_adapters(model, adapter_path)
 
-    args = model.args
+    args = vars(model.args)
 
     fused_linears = [
         (n, m.fuse(de_quantize=de_quantize))
@@ -55,7 +55,7 @@ def fuse_and_save_model(
 
     if de_quantize:
         print("De-quantizing model")
-        model = dequantize(model)  # Fixed: was model_obj, should be model
+        model = dequantize(model)
         args.pop("quantization", None)
 
     save_path_obj = Path(save_path)
@@ -78,7 +78,7 @@ def from_pretrained(
     adapter_path: Optional[str] = None,
     lora_config: Optional[dict] = None,
     quantized_load: Optional[dict] = None,
-) -> nn.Module:
+) -> Tuple[nn.Module, Any]:
     """
     Load a model with LoRA adapters and optional quantization.
     Args:
@@ -86,36 +86,39 @@ def from_pretrained(
         lora_config: Configuration for LoRA adapters.
         quantized_load: If provided, the model will be loaded with quantization.
     Returns:
-        nn.Module: The model with LoRA adapters loaded.
-        tokenizer: The tokenizer associated with the model.
+        Tuple[nn.Module, tokenizer]: The model with LoRA adapters loaded, and tokenizer.
     """
-
     print(f"Loading model {model}")
     model, tokenizer = load(model, adapter_path=adapter_path)
+    args = vars(model.args) if hasattr(model, "args") else {}
 
     if lora_config is not None:
         print(f"Loading LoRA adapters with config: {lora_config}")
-        this_lora_config = {
-            "rank": getattr(lora_config, "rank", 8),
-            "dropout": getattr(lora_config, "dropout", 0.0),
-            "scale": getattr(lora_config, "scale", 10.0),
-            "use_dora": getattr(lora_config, "use_dora", False),
-        }
+        rank = lora_config.get("rank", 8)
+        dropout = lora_config.get("dropout", 0.0)
+        scale = lora_config.get("scale", 10.0)
+        use_dora = lora_config.get("use_dora", False)
 
         model.freeze()
         linear_to_lora_layers(
             model=model,
-            num_layers=getattr(lora_config, "num_layers", None),
-            config=this_lora_config,
-            use_dora=getattr(lora_config, "use_dora", False),
+            num_layers=lora_config.get("num_layers", None),
+            config={"rank": rank, "dropout": dropout, "scale": scale, "use_dora": use_dora},
+            use_dora=use_dora,
         )
     
     if quantized_load is not None:
-        print(f"Quantizing model with {quantized_load} bits")
-        nn.quantize(
-            model,
-            bits=getattr(quantized_load, "bits", 4),
-            group_size=getattr(quantized_load, "group_size", 128),
-        )
+        print(f"Quantizing model with {quantized_load['bits']} bits")
+        if "quantization" in args:
+            raise ValueError("Cannot quantize already quantized model")
+
+        bits = quantized_load.get("bits", 4)
+        group_size = quantized_load.get("group_size", 128)
+
+        nn.quantize(model, bits=bits, group_size=group_size)
+        
+        if hasattr(model, "args"):
+            model.args.quantization = {"group_size": group_size, "bits": bits}
+            model.args.quantization_config = model.args.quantization
 
     return model, tokenizer

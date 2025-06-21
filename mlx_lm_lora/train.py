@@ -89,8 +89,6 @@ CONFIG_DEFAULTS = {
     "lora_parameters": {"rank": 8, "dropout": 0.0, "scale": 10.0},
     "mask_prompt": False,
     "fuse": True,
-    "fuse_de_quantize": False,
-    "fuse_export_gguf": False,
 
     # ORPO args
     "beta": 0.1,
@@ -151,14 +149,6 @@ def build_parser():
         type=str,
         help="The path to the local model directory or Hugging Face repo.",
     )
-
-    # Training args
-    parser.add_argument(
-        "--train",
-        action="store_true",
-        help="Do training",
-        default=None,
-    )
     parser.add_argument(
         "--load-in-4bits",
         action="store_true",
@@ -175,6 +165,14 @@ def build_parser():
         "--load-in-8bits",
         action="store_true",
         help="Load the model in 8-bit quantization.",
+        default=None,
+    )
+
+    # Training args
+    parser.add_argument(
+        "--train",
+        action="store_true",
+        help="Do training",
         default=None,
     )
     parser.add_argument(
@@ -290,18 +288,6 @@ def build_parser():
         "--fuse",
         action="store_true",
         help="Fuse and save the trained model.",
-        default=None,
-    )
-    parser.add_argument(
-        "--fuse-de-quantize",
-        action="store_true",
-        help="Fuse and save the raw trained model too.",
-        default=None,
-    )
-    parser.add_argument(
-        "--fuse-export-gguf",
-        action="store_true",
-        help="Fuse and save the gguf model too.",
         default=None,
     )
 
@@ -945,9 +931,9 @@ def run(args, training_callback: TrainingCallback = None):
             model=model,
             tokenizer=tokenizer,
             save_path=args.adapter_path,
-            adapter_path=args.adapter_path,
-            de_quantize=args.de_quantize,
-            export_gguf=args.export_gguf,
+            adapter_path=None,
+            de_quantize=False,
+            export_gguf=False,
         )
 
 

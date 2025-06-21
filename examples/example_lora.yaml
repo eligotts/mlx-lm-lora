@@ -27,8 +27,6 @@ optimizer: adamw
 data: "mlx-community/WikiSQL"
 
 fuse: true
-fuse_de_quantize: true
-fuse_export_gguf: true
 
 # judge: "mlx-community/Josiefied-Qwen3-0.6B-abliterated-v1-4bi"
 # judge_config:
