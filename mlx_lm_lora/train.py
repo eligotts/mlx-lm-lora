@@ -22,6 +22,7 @@ from .trainer.online_dpo_trainer import  OnlineDPOTrainingArgs, evaluate_online_
 from .trainer.sft_trainer import SFTTrainingArgs, TrainingCallback, evaluate_sft, train_sft
 from .trainer.grpo_trainer import GRPOTrainingArgs, evaluate_grpo, train_grpo
 from .trainer.orpo_trainer import ORPOTrainingArgs, evaluate_orpo, train_orpo
+from .trainer.rflhf_trainer import RLHFTrainingArgs, evaluate_rlhf, train_rlhf
 from .trainer.xpo_trainer import  XPOTrainingArgs, evaluate_xpo, train_xpo
 from .trainer.dpo_trainer import DPOTrainingArgs, evaluate_dpo, train_dpo
 from .trainer.cpo_trainer import CPOTrainingArgs, evaluate_cpo, train_cpo
@@ -193,8 +194,8 @@ def build_parser():
         "--train-mode",
         type=str,
         default="sft",
-        choices=["sft", "dpo", "cpo", "orpo", "grpo", "online_dpo", "xpo"],
-        help="Training mode: sft, dpo, online_dpo, xpo, cpo, orpo, or grpo, default is sft",
+        choices=["sft", "dpo", "cpo", "orpo", "grpo", "online_dpo", "xpo", "rlhf"],
+        help="Training mode: sft, dpo, rlhf, online_dpo, xpo, cpo, orpo, or grpo, default is sft",
     )
     parser.add_argument(
         "--optimizer",
@@ -537,6 +538,7 @@ def train_model(
             reference_model_path=args.reference_model_path,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             judge=args.judge,
+            max_completion_length=args.max_completion_length,
         )
 
         print("Loading pretrained reference model")
@@ -568,6 +570,54 @@ def train_model(
             args=online_dpo_training_args,
             training_callback=training_callback,
         )
+    
+    elif args.train_mode == "rlhf":
+        online_dpo_training_args = RLHFTrainingArgs(
+            batch_size=args.batch_size,
+            iters=args.iters,
+            val_batches=args.val_batches,
+            steps_per_report=args.steps_per_report,
+            steps_per_eval=args.steps_per_eval,
+            steps_per_save=args.save_every,
+            adapter_file=adapter_file,
+            max_seq_length=args.max_seq_length,
+            grad_checkpoint=args.grad_checkpoint,
+            beta=args.beta,
+            reference_model_path=args.reference_model_path,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            judge=args.judge,
+            max_completion_length=args.max_completion_length,
+        )
+
+        print("Loading pretrained reference model")
+        if args.reference_model_path:
+            reference_model, _ = load(args.reference_model_path)
+        else:
+            reference_model, _ = load(args.model)
+
+        print("Loading pretrained judge model")
+        if args.judge:
+            if args.judge == args.reference_model_path:
+                judge_model = reference_model
+                judge_tokenizer = load_tokenizer(args.judge)
+            else:
+                judge_model, judge_tokenizer = load(args.judge)
+        else:
+            judge_model, judge_tokenizer = load(args.judge)
+
+        train_rlhf(
+            model=model,
+            tokenizer=tokenizer,
+            ref_model=reference_model.freeze(),
+            judge_model=judge_model,
+            judge_tokenizer=judge_tokenizer,
+            judge_config=args.judge_config,
+            optimizer=opt,
+            train_dataset=CacheDataset(train_set),
+            val_dataset=CacheDataset(valid_set),
+            args=online_dpo_training_args,
+            training_callback=training_callback,
+        )
 
     elif args.train_mode == "xpo":
         xpo_training_args = XPOTrainingArgs(
@@ -587,6 +637,7 @@ def train_model(
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             alpha=args.alpha,
             judge=args.judge,
+            max_completion_length=args.max_completion_length,
         )
 
         print("Loading pretrained reference model")
@@ -777,6 +828,25 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
         for metric_name, metric_value in test_metrics.items():
             print(f"  {metric_name}: {float(metric_value):.3f}")
 
+    elif args.train_mode == "rlhf":
+        if args.reference_model_path:
+            reference_model, _ = load(args.reference_model_path)
+        else:
+            reference_model, _ = load(args.model)
+
+        test_loss, _, _, test_metrics = evaluate_rlhf(
+            model=model,
+            ref_model=reference_model.freeze(),
+            dataset=test_set,
+            batch_size=args.batch_size,
+            num_batches=args.test_batches,
+            max_seq_length=args.max_seq_length,
+            beta=args.beta,
+            loss_type=args.dpo_cpo_loss_type,
+            judge=args.judge,
+            max_tokens=args.max_completion_length,
+        )
+    
     elif args.train_mode == "online_dpo":
         if args.reference_model_path:
             reference_model, _ = load(args.reference_model_path)
