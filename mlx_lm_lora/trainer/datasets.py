@@ -464,7 +464,7 @@ def create_dataset(
                 )
         else:
             raise ValueError("Unsupported data format for Online DPO or CPO training.")
-    elif train_mode in ["online_dpo", "xpo"]:
+    elif train_mode in ["online_dpo", "xpo", "rlhf"]:
         if prompt_feature in sample:
             return PromptDataset(
                 data=data,
