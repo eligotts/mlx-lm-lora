@@ -128,8 +128,6 @@ def evaluate_rlhf(
         judger = LLMPPOJudge(model=judge_model, tokenizer=judge_tokenizer, system_prompt=judge_config.get("system_prompt", None))
         rewards = judger.judge(prompt_texts, completions=completions)
         
-        print(rewards)
-        
         # Process completions into tokens and masks
         all_tokens = []
         all_masks = []
