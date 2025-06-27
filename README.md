@@ -17,6 +17,19 @@ Train Large Language Models localy on Apple Silicon using MLX. Training works wi
 - MiniCPM, MiniCPM3
 - and more ...
 
+Supported training algorithms include:
+
+- LoRA, DoRA, and full-precision fine-tuning
+- Supervised Fine-Tuning (SFT)
+- Direct Preference Optimization (DPO)
+- Online Direct Preference Optimization (Online DPO)
+- eXtended Preference Optimization (XPO)
+- Contrastive Preference Optimization (CPO)
+- Odds Ratio Preference Optimization (ORPO)
+- Reinforcement Learning from Human Feedback (RLHF)
+- Group Relative Policy Optimization (GRPO)
+- Pretraining models from scratch
+
 ### 📓 Notebooks Examples
 
 * [🧪 LoRA Fine-Tuning (SFT)](examples/custom_sft_lora.ipynb) – Shows how to fine-tune a model using LoRA on a standard SFT dataset.
