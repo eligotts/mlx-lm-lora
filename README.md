@@ -28,7 +28,6 @@ Supported training algorithms include:
 - Odds Ratio Preference Optimization (ORPO)
 - Reinforcement Learning from Human Feedback (RLHF)
 - Group Relative Policy Optimization (GRPO)
-- Pretraining models from scratch
 
 ### 📓 Notebooks Examples
 
