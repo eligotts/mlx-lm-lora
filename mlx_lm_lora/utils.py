@@ -13,6 +13,14 @@ from mlx_lm.utils import (
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 
 import mlx.nn as nn
+import math
+
+def calculate_iters(train_set, batch_size, epochs) -> int:
+    num_samples = len(train_set)
+    batches_per_epoch = math.ceil(num_samples / batch_size)
+    iters = epochs * batches_per_epoch
+    print(f"[INFO] Calculated {iters} iterations from {epochs} epochs (dataset size: {num_samples}, batch size: {batch_size})")
+    return iters
 
 
 def fuse_and_save_model(
