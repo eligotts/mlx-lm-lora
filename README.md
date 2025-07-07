@@ -442,7 +442,7 @@ of memory. Here are some tips to reduce memory use should you need to do so:
 
 ---
 
-Citing MLX-LM-LoRA
+## Citing MLX-LM-LoRA
 
 The MLX-LM-LoRA software suite was developed by Gökdeniz Gülmez. If you find MLX-LM-LoRA useful in your research and wish to cite it, please use the following BibTex entry:
 
