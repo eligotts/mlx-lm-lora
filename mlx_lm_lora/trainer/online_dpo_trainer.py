@@ -40,6 +40,10 @@ class OnlineDPOTrainingArgs(SFTTrainingArgs):
         default="human",
         metadata={"help": "What LLM to use as the judge, if 'human' empty, it's going to be you (human)."}
     )
+    judge_system: str = field(
+        default=None,
+        metadata={"help": "How the judge should base its judging."}
+    )
     max_completion_length: int = field(
         default=512, metadata={"help": "Number of Generations."}
     )
