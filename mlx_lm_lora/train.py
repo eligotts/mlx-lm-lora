@@ -15,7 +15,7 @@ import mlx.nn as nn
 from mlx_lm.tokenizer_utils import load_tokenizer
 from mlx_lm.tuner.callbacks import WandBCallback
 from mlx_lm.utils import load, save_config
-from mlx_optimizers import Muon, QHAdam
+from mlx_optimizers import QHAdam
 
 from .trainer.grpo_reward_functions import get_reward_function, get_default_reward_functions, list_available_reward_functions
 from .trainer.online_dpo_trainer import  OnlineDPOTrainingArgs, evaluate_online_dpo, train_online_dpo
@@ -457,7 +457,7 @@ def train_model(
     elif optimizer_name == "qhadam":
         opt_class = QHAdam
     elif optimizer_name == "muon":
-        opt_class = Muon
+        opt_class = optim.Muon
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
