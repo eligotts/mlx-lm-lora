@@ -14,7 +14,7 @@ from mlx_lm.tuner.callbacks import TrainingCallback
 from .sft_trainer import SFTTrainingArgs, average_gradients, grad_checkpoint
 
 from mlx_lm.models import cache
-from mlx_lm.generate import generate_step
+from mlx_lm.generate import generate, make_sampler
 from .grpo_reward_functions import (
     RewardFunctions,
     r1_accuracy_reward_func,
@@ -79,7 +79,6 @@ def get_per_token_logps(model: nn.Module, inputs, lengths):
     mx.eval(logits)
     return per_token_logps
 
-
 def generate_grpo(
     model: nn.Module,
     tokenizer,
@@ -90,64 +89,57 @@ def generate_grpo(
     batch_size: int,
     end_token: str = "</answer>"
 ):
-    try:
-        end_sequence = mx.array(tokenizer.encode(end_token))
-        total_samples = len(prompt_tokens)
-        all_completions = []
-        all_completion_texts = []
-        batch_indices = []
-        for i in range(0, total_samples, batch_size):
-            current_batch_size = min(batch_size, total_samples - i)
-            batch_prompts = prompt_tokens[i : i + current_batch_size]
-            max_prompt_len = max(len(p) for p in batch_prompts)
-            padded_prompts = []
-            for prompt in batch_prompts:
-                padding = [tokenizer.pad_token_id] * (max_prompt_len - len(prompt))
-                padded_prompts.append(prompt + padding)
+    model.eval()
+    all_completions = []
+    all_completion_texts = []
+    batch_indices = []
 
-            prompt_tensor = mx.stop_gradient(mx.array(padded_prompts))
-            if len(prompt_tensor.shape) == 1:
-                prompt_tensor = prompt_tensor[None, :]
-            if prompt_tensor.shape[1] == 0:
-                continue
+    # end_sequence = mx.array(tokenizer.encode(end_token))  # Removed as per instructions
+    total_samples = len(prompt_tokens)
 
-            expanded_prompts = mx.repeat(prompt_tensor, group_size, axis=0)
-            batch_results = []
-            total_prompt_samples = expanded_prompts.shape[0]
-            for prompt_idx in range(total_prompt_samples):
-                current_tokens = []
+    for i in range(0, total_samples, batch_size):
+        current_batch_size = min(batch_size, total_samples - i)
+        batch_prompts = prompt_tokens[i : i + current_batch_size]
+
+        for j, prompt in enumerate(batch_prompts):
+            for k in range(group_size):
+                prompt_text = tokenizer.decode(prompt)
+                sampler = make_sampler(
+                    temperature,
+                    top_p=1.0,
+                    min_p=0.0,
+                    min_tokens_to_keep=1,
+                    top_k=0,
+                    xtc_probability=0.0,
+                    xtc_threshold=0.0,
+                    xtc_special_tokens=tokenizer.encode("\n") + list(tokenizer.eos_token_ids),
+                )
                 prompt_cache = cache.make_prompt_cache(model)
-                for token, _ in generate_step(
-                    expanded_prompts[prompt_idx],
-                    model,
+                completion: str | List[int] = generate(
+                    model=model,
+                    tokenizer=tokenizer,
+                    prompt=prompt_text,
                     max_tokens=max_tokens,
-                    sampler=lambda x: mx.random.categorical(x / temperature),
+                    verbose=False,
+                    sampler=sampler,
                     prompt_cache=prompt_cache,
-                ):
-                    if token == tokenizer.eos_token_id:
-                        break
+                )
+                if isinstance(completion, str):
+                    completion_ids = tokenizer.encode(completion)
+                else:
+                    completion_ids = completion
 
-                    current_tokens.append(token)
-                    if len(current_tokens) >= len(end_sequence) and mx.array_equal(
-                        mx.array(current_tokens[-len(end_sequence) :]), end_sequence
-                    ):
-                        break
+                if end_token:
+                    end_sequence = tokenizer.encode(end_token)
+                    if len(completion_ids) >= len(end_sequence) and completion_ids[-len(end_sequence):] == end_sequence:
+                        completion_ids = completion_ids[:-len(end_sequence)]
 
-                if current_tokens:
-                    batch_results.append(mx.array(current_tokens))
+                completion_ids = mx.array(completion_ids)
+                all_completions.append(mx.stop_gradient(completion_ids))
+                all_completion_texts.append(completion)
+                batch_indices.append(i + j)
 
-            if batch_results:
-                for j, completion_ids in enumerate(batch_results):
-                    prompt_idx = i + (j // group_size)
-                    if prompt_idx < total_samples:
-                        batch_indices.append(prompt_idx)
-                        completion_text = tokenizer.decode(completion_ids.tolist())
-                        all_completions.append(mx.stop_gradient(completion_ids))
-                        all_completion_texts.append(completion_text)
-
-    finally:
-        mx.clear_cache()
-
+    mx.clear_cache()
     return all_completions, all_completion_texts, batch_indices
 
 
@@ -629,6 +621,8 @@ def train_grpo(
             temperature=args.temperature,
             batch_size=args.batch_size,
         )
+
+        mx.clear_cache()
 
         (lvalue, toks, metrics), grad = loss_value_and_grad(
             model,

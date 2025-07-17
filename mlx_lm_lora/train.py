@@ -539,6 +539,7 @@ def train_model(
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             judge=args.judge,
             max_completion_length=args.max_completion_length,
+            temperature=args.temperature,
         )
 
         print("Loading pretrained reference model")
@@ -561,7 +562,7 @@ def train_model(
             model=model,
             tokenizer=tokenizer,
             ref_model=reference_model.freeze(),
-            judge_model=judge_model,
+            judge_model=judge_model.freeze(),
             judge_tokenizer=judge_tokenizer,
             judge_config=args.judge_config,
             optimizer=opt,
@@ -609,7 +610,7 @@ def train_model(
             model=model,
             tokenizer=tokenizer,
             ref_model=reference_model.freeze(),
-            judge_model=judge_model,
+            judge_model=judge_model.freeze(),
             judge_tokenizer=judge_tokenizer,
             judge_config=args.judge_config,
             optimizer=opt,
@@ -661,7 +662,7 @@ def train_model(
             tokenizer=tokenizer,
             ref_model=reference_model.freeze(),
             judge_config=args.judge_config,
-            judge_model=judge_model,
+            judge_model=judge_model.freeze(),
             judge_tokenizer=judge_tokenizer,
             optimizer=opt,
             train_dataset=CacheDataset(train_set),

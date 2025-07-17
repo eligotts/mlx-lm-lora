@@ -13,7 +13,6 @@ from mlx_lm.tuner.callbacks import TrainingCallback
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 from mlx_lm.sample_utils import make_sampler
 from mlx_lm.generate import generate
-from mlx_lm.utils import load
 
 from .sft_trainer import SFTTrainingArgs, grad_checkpoint
 from .judge import LLMPairwiseJudge, HumanPairwiseJudge
@@ -35,6 +34,12 @@ class OnlineDPOTrainingArgs(SFTTrainingArgs):
     )
     delta: float = field(
         default=50.0, metadata={"help": "Delta parameter for DPOP loss type."}
+    )
+    temperature: float = field(
+        default=0.8,
+        metadata={
+            "help": "Temperature for sampling. The higher the temperature, the more random the completions."
+        },
     )
     judge: str = field(
         default="human",
@@ -59,19 +64,20 @@ def generate_for_online_dpo(
     model: nn.Module,
     tokenizer: Union[PreTrainedTokenizer, TokenizerWrapper],
     prompts,
-    max_tokens: int = 512
+    max_tokens: int = 512,
+    temperature: float = 0.8
 ) -> list[list[str]]:
     completions = []
 
     sampler = make_sampler(
-        0.7,
-        40,
-        # args.min_p,
-        # args.min_tokens_to_keep,
-        # top_k=args.top_k,
-        # xtc_probability=args.xtc_probability,
-        # xtc_threshold=args.xtc_threshold,
-        # xtc_special_tokens=tokenizer.encode("\n") + list(tokenizer.eos_token_ids),
+        temperature,
+        top_p=1.0,
+        min_p=0.0,
+        min_tokens_to_keep=1,
+        top_k=0,
+        xtc_probability=0.0,
+        xtc_threshold=0.0,
+        xtc_special_tokens=tokenizer.encode("\n") + list(tokenizer.eos_token_ids),
     )
 
     for prompt in prompts:
@@ -83,6 +89,7 @@ def generate_for_online_dpo(
             
         generated_1 = generate(model, tokenizer, prompt_text, max_tokens=max_tokens, sampler=sampler)
         generated_2 = generate(model, tokenizer, prompt_text, max_tokens=max_tokens, sampler=sampler)
+
         completions.append([generated_1, generated_2])
     return completions
 
@@ -125,21 +132,22 @@ def online_dpo_loss(
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
-    # Token counts and rewards
-    num_chosen_tokens = chosen_masks.sum(-1) if hasattr(chosen_masks, 'sum') else chosen_masks
-    num_rejected_tokens = rejected_masks.sum(-1) if hasattr(rejected_masks, 'sum') else rejected_masks
+    # Token counts
+    num_chosen_tokens = chosen_masks.sum(-1)
+    num_rejected_tokens = rejected_masks.sum(-1)
     num_tokens = (num_chosen_tokens + num_rejected_tokens).sum()
 
-    chosen_reward = beta * mx.mean(policy_chosen_score - reference_chosen_score)
-    rejected_reward = beta * mx.mean(policy_rejected_score - reference_rejected_score)
-    reward = mx.stack([chosen_reward, rejected_reward])
+    # Per-sample rewards
+    chosen_reward = beta * (policy_chosen_score - reference_chosen_score)
+    rejected_reward = beta * (policy_rejected_score - reference_rejected_score)
+    reward = mx.stack([mx.mean(chosen_reward), mx.mean(rejected_reward)])
 
     # Metrics
     metrics = {
         "accuracies": mx.mean((chosen_reward > rejected_reward).astype(mx.float32)),
         "margins": mx.mean(chosen_reward - rejected_reward),
-        "policy_rejected_logps": mx.mean(policy_rejected_score / num_rejected_tokens),
-        "policy_chosen_logps": mx.mean(policy_chosen_score / num_chosen_tokens),
+        "policy_rejected_logps": mx.mean(policy_rejected_score),
+        "policy_chosen_logps": mx.mean(policy_chosen_score),
         "rejected_logits_mean": mx.mean(policy_rejected_score),
         "chosen_logits_mean": mx.mean(policy_chosen_score),
     }
@@ -191,7 +199,8 @@ def evaluate_online_dpo(
     judge_model: mx.array = None,
     judge_tokenizer: mx.array = None,
     tokenizer=None,
-    max_tokens: int = 512
+    max_tokens: int = 512,
+    temperature: float = 0.8,
 ):
     all_losses = 0
     all_rewards = mx.zeros((2,))
@@ -210,7 +219,7 @@ def evaluate_online_dpo(
     ):
         prompts, prompt_texts = batch
         
-        completions = generate_for_online_dpo(model, tokenizer, prompts, max_tokens=max_tokens)
+        completions = generate_for_online_dpo(model, tokenizer, prompts, temperature=temperature, max_tokens=max_tokens)
         
         if judge_model == "human":
             judger = HumanPairwiseJudge()
@@ -349,7 +358,7 @@ def train_online_dpo(
         prompts, prompt_texts = batch
         
         # Generate completions for each prompt
-        completions = generate_for_online_dpo(model, tokenizer, prompts, max_tokens=args.max_completion_length)
+        completions = generate_for_online_dpo(model, tokenizer, prompts, max_tokens=args.max_completion_length, temperature=args.temperature)
         
         # Judge the completions
         if judge_model == "human":
@@ -398,37 +407,33 @@ def train_online_dpo(
         policy_rejected_score = mx.array([compute_score(score, mask, args.loss_type) for score, mask in zip(policy_rejected_scores, rejected_masks)])
         
         # Get reference scores
-        if ref_model is None:
-            reference_chosen_logprobs = mx.zeros_like(policy_chosen_score)
-            reference_rejected_logprobs = mx.zeros_like(policy_rejected_score)
-        else:
-            ref_chosen_scores = []
-            ref_rejected_scores = []
-            
-            for tokens, mask in zip(chosen_tokens, chosen_masks):
-                batch_tokens = tokens.reshape(1, -1)
-                batch_mask = mask.reshape(1, -1)
-                score = mx.stop_gradient(get_token_scores(ref_model, batch_tokens, batch_mask))
-                ref_chosen_scores.append(score)
-                
-            for tokens, mask in zip(rejected_tokens, rejected_masks):
-                batch_tokens = tokens.reshape(1, -1)
-                batch_mask = mask.reshape(1, -1)
-                score = mx.stop_gradient(get_token_scores(ref_model, batch_tokens, batch_mask))
-                ref_rejected_scores.append(score)
-                
-            reference_chosen_logprobs = mx.array([compute_score(score, mask, args.loss_type) for score, mask in zip(ref_chosen_scores, chosen_masks)])
-            reference_rejected_logprobs = mx.array([compute_score(score, mask, args.loss_type) for score, mask in zip(ref_rejected_scores, rejected_masks)])
+        ref_chosen_scores = []
+        ref_rejected_scores = []
         
-        # Convert masks to token counts
-        chosen_mask_counts = mx.array([mask.sum() for mask in chosen_masks])
-        rejected_mask_counts = mx.array([mask.sum() for mask in rejected_masks])
+        for tokens, mask in zip(chosen_tokens, chosen_masks):
+            batch_tokens = tokens.reshape(1, -1)
+            batch_mask = mask.reshape(1, -1)
+            score = mx.stop_gradient(get_token_scores(ref_model, batch_tokens, batch_mask))
+            ref_chosen_scores.append(score)
+            
+        for tokens, mask in zip(rejected_tokens, rejected_masks):
+            batch_tokens = tokens.reshape(1, -1)
+            batch_mask = mask.reshape(1, -1)
+            score = mx.stop_gradient(get_token_scores(ref_model, batch_tokens, batch_mask))
+            ref_rejected_scores.append(score)
+            
+        reference_chosen_logprobs = mx.array([compute_score(score, mask, args.loss_type) for score, mask in zip(ref_chosen_scores, chosen_masks)])
+        reference_rejected_logprobs = mx.array([compute_score(score, mask, args.loss_type) for score, mask in zip(ref_rejected_scores, rejected_masks)])
+        
+        # Stack masks into proper 2D tensors
+        chosen_mask_array = mx.stack(chosen_masks)
+        rejected_mask_array = mx.stack(rejected_masks)
         
         # Compute loss and gradients
         (lvalue, reward, toks, metrics), grad = loss_value_and_grad(
             policy_chosen_score, policy_rejected_score, 
             reference_chosen_logprobs, reference_rejected_logprobs, 
-            chosen_mask_counts, rejected_mask_counts
+            chosen_mask_array, rejected_mask_array
         )
         
         if (it + 1) % args.gradient_accumulation_steps == 0:
