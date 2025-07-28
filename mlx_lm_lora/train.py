@@ -108,17 +108,14 @@ CONFIG_DEFAULTS = {
     # GRPO args
     "group_size": 4,
     "epsilon": 1e-4,
+    "epsilon_high": None, # DAPO
     "max_completion_length": 512,
     "temperature": 0.8,
     "reward_weights": None,
     "reward_functions": None,
     "reward_functions_file": None,
-
-    # DAPO
-    "epsilon_high": None,
-
-    # GSPO args
-    "importance_sampling_level": None,
+    "grpo_loss_type": "grpo",
+    "importance_sampling_level": None, # GSPO
 }
 
 
@@ -392,6 +389,14 @@ def build_parser():
         "--list-reward-functions",
         action="store_true",
         help="List all available reward functions and exit",
+    )
+
+    parser.add_argument(
+        "--grpo-loss-type",
+        type=str,
+        help="GRPO loss type: 'grpo', 'bnpo', or 'dr_grpo'.",
+        choices=["grpo", "bnpo", "dr_grpo"],
+        default="grpo",
     )
 
     # DAPO args
@@ -755,6 +760,9 @@ def train_model(
                 if args.reward_weights
                 else None
             ),
+            temperature=args.temperature,
+            importance_sampling_level=args.importance_sampling_level,
+            grpo_loss_type=args.grpo_loss_type,
         )
 
         print("Loading pretrained reference model")

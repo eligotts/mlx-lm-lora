@@ -19,7 +19,6 @@ from .grpo_reward_functions import (
     RewardFunctions,
     r1_accuracy_reward_func,
     r1_count_xml,
-    r1_extract_xml_answer,
     r1_int_reward_func,
     r1_soft_format_reward_func,
     r1_strict_format_reward_func,
@@ -72,12 +71,12 @@ class GRPOTrainingArgs(SFTTrainingArgs):
             "help": "Temperature for sampling. The higher the temperature, the more random the completions."
         },
     )
-    # grpo_loss_type: str = field(
-    #     default="grpo",
-    #     metadata={
-    #         "help": "Type of loss to use for GRPO. Currently only 'grpo' is supported."
-    #     },
-    # )
+    grpo_loss_type: str = field(
+        default="grpo",
+        metadata={
+            "help": "Type of loss to use for GRPO. Supported: 'grpo', 'bnpo', 'dr_grpo'."
+        }
+    )
     reward_weights: Optional[List[float]] = field(
         default=None,
         metadata={
@@ -87,12 +86,12 @@ class GRPOTrainingArgs(SFTTrainingArgs):
     importance_sampling_level: str = field(
         default=None,
         metadata={
-        "help": "importance_sampling_level (`str`, *optional*, defaults to None): "
-            "Controls whether importance sampling ratios are computed at the 'token' or 'sequence' level. "
-            "keeps the raw per-token log-probability ratios (one weight per token).  'sequence' averages the "
-            "log-probability ratios across valid tokens to produce a single ratio per sequence. The "
-            "GSPO paper https://huggingface.co/papers/2507.18071) shows that sequence-level sampling often yields more "
-            "stable training and better alignment with  sequence-level rewards.."
+            "help": "importance_sampling_level (`str`, *optional*, defaults to None): "
+                "Controls whether importance sampling ratios are computed at the 'token' or 'sequence' level. "
+                "keeps the raw per-token log-probability ratios (one weight per token).  'sequence' averages the "
+                "log-probability ratios across valid tokens to produce a single ratio per sequence. The "
+                "GSPO paper https://huggingface.co/papers/2507.18071) shows that sequence-level sampling often yields more "
+                "stable training and better alignment with  sequence-level rewards.."
         },
     )
 
@@ -196,6 +195,7 @@ def grpo_loss(
     reward_weights: Optional[List[float]] = None,
     batch_size: int = 1,
     importance_sampling_level: str = "token",
+    grpo_loss_type: str = "grpo",
 ):
     prompt_tokens, _, prompt_text, answer_text, type_info = batch
 
@@ -415,10 +415,15 @@ def grpo_loss(
     if beta != 0.0:
         per_token_loss = per_token_loss + beta * kl_div
 
-    # Average over tokens
-    loss = (
-        per_token_loss * length_mask
-    ).sum() / length_mask.sum()
+    
+    if grpo_loss_type == "grpo":
+        loss = (per_token_loss * length_mask).sum() / length_mask.sum()
+    elif grpo_loss_type == "bnpo":
+        loss = (per_token_loss * length_mask).sum() / mx.maximum(length_mask.sum(), 1.0)
+    elif grpo_loss_type == "dr_grpo":
+        loss = (per_token_loss * length_mask).sum() / (per_token_loss.shape[0] * max_tokens)
+    else:
+        raise ValueError(f"Unknown loss type: {grpo_loss_type}")
 
     # Calculate mean KL divergence for metrics
     mean_kl = ((kl_div * length_mask).sum(axis=1) / length_mask.sum(axis=1)).mean()
@@ -554,6 +559,8 @@ def evaluate_grpo(
     ],
     loss_fn: callable = grpo_loss,
     iterate_batches: callable = iterate_grpo_batches,
+    grpo_loss_type: str = "grpo",
+    importance_sampling_level: str = "token",
 ):
     all_losses = 0
     ntokens = 0
@@ -581,6 +588,8 @@ def evaluate_grpo(
             ref_model=ref_model,
             temperature=temperature,
             max_tokens=max_tokens,
+            importance_sampling_level=importance_sampling_level,
+            grpo_loss_type=grpo_loss_type,
         )
 
         all_losses += losses * toks
@@ -664,6 +673,9 @@ def train_grpo(
             epsilon=args.epsilon,
             epsilon_high=args.epsilon_high,
             ref_model=ref_model,
+            grpo_loss_type=args.grpo_loss_type,
+            max_tokens=args.max_completion_length,
+            importance_sampling_level=args.importance_sampling_level,
         )
 
         if (it + 1) % args.gradient_accumulation_steps == 0:
@@ -724,6 +736,7 @@ def train_grpo(
                 epsilon_high=args.epsilon_high,
                 temperature=args.temperature,
                 iterate_batches=iterate_batches,
+                grpo_loss_type=args.grpo_loss_type,
             )
             val_time = time.perf_counter() - stop
             if rank == 0:
