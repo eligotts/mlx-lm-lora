@@ -128,7 +128,6 @@ def generate_grpo(
     all_completion_texts = []
     batch_indices = []
 
-    # end_sequence = mx.array(tokenizer.encode(end_token))  # Removed as per instructions
     total_samples = len(prompt_tokens)
 
     for i in range(0, total_samples, batch_size):
@@ -148,6 +147,7 @@ def generate_grpo(
                     xtc_threshold=0.0,
                     xtc_special_tokens=tokenizer.encode("\n") + list(tokenizer.eos_token_ids),
                 )
+                
                 prompt_cache = cache.make_prompt_cache(model)
                 completion: str | List[int] = generate(
                     model=model,
@@ -158,6 +158,8 @@ def generate_grpo(
                     sampler=sampler,
                     prompt_cache=prompt_cache,
                 )
+
+
                 if isinstance(completion, str):
                     completion_ids = tokenizer.encode(completion)
                 else:
