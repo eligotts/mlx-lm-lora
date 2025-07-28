@@ -760,7 +760,6 @@ def train_model(
                 if args.reward_weights
                 else None
             ),
-            temperature=args.temperature,
             importance_sampling_level=args.importance_sampling_level,
             grpo_loss_type=args.grpo_loss_type,
         )
