@@ -85,9 +85,9 @@ class GRPOTrainingArgs(SFTTrainingArgs):
         },
     )
     importance_sampling_level: str = field(
-        default="token",
+        default=None,
         metadata={
-        "help": "importance_sampling_level (`str`, *optional*, defaults to 'token'): "
+        "help": "importance_sampling_level (`str`, *optional*, defaults to None): "
             "Controls whether importance sampling ratios are computed at the 'token' or 'sequence' level. "
             "keeps the raw per-token log-probability ratios (one weight per token).  'sequence' averages the "
             "log-probability ratios across valid tokens to produce a single ratio per sequence. The "
@@ -195,7 +195,6 @@ def grpo_loss(
     temperature: float = 0.8,
     reward_weights: Optional[List[float]] = None,
     batch_size: int = 1,
-    is_validation: bool = False,
     importance_sampling_level: str = "token",
 ):
     prompt_tokens, _, prompt_text, answer_text, type_info = batch
@@ -390,8 +389,8 @@ def grpo_loss(
             "Possible values are 'token', 'sequence', or None."
         )
 
+    # Calculate importance weights
     coef_1 = mx.exp(log_importance_weights)
-    coef_2 = mx.clip(coef_1, 1 - epsilon, 1 + epsilon_high)
 
     # Apply PPO like clipping
     epsilon_high = epsilon_high if epsilon_high else epsilon
@@ -477,27 +476,6 @@ def grpo_loss(
         ),
         **reward_metrics,
     }
-
-    if is_validation and all_completion_texts:
-        tqdm.write("\n=== Validation Sample Details ===")
-        last_prompt_idx = batch_indices[-1] if batch_indices else 0
-        if last_prompt_idx < len(prompt_text):
-            tqdm.write(f"\n📋 Raw Prompt:\n{prompt_text[last_prompt_idx]}")
-            tqdm.write("\n" + "=" * 10 + "\n")
-            if last_prompt_idx < len(prompt_tokens):
-                actual_prompt = tokenizer.decode(prompt_tokens[last_prompt_idx])
-                tqdm.write(f"\n🔄 Model Input:\n{actual_prompt}")
-                tqdm.write("\n" + "=" * 10 + "\n")
-        tqdm.write(f"\n📝 Generation:\n{all_completion_texts[-1]}")
-        tqdm.write("\n" + "=" * 10 + "\n")
-        if last_prompt_idx < len(answer_text):
-            tqdm.write(f"\n✅ Answer:\n{answer_text[last_prompt_idx]}")
-            tqdm.write("\n" + "=" * 10 + "\n")
-        if "r1_extract_xml_answer" in globals():
-            tqdm.write(
-                f"\n🔍 Extracted Answer:\n{r1_extract_xml_answer(all_completion_texts[-1])}"
-            )
-        tqdm.write("\n" + "=" * 35 + "\n")
 
     mx.clear_cache()
 
@@ -603,7 +581,6 @@ def evaluate_grpo(
             ref_model=ref_model,
             temperature=temperature,
             max_tokens=max_tokens,
-            is_validation=True,
         )
 
         all_losses += losses * toks

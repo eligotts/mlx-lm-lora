@@ -118,7 +118,7 @@ CONFIG_DEFAULTS = {
     "epsilon_high": None,
 
     # GSPO args
-    "importance_sampling_level": "token",
+    "importance_sampling_level": None,
 }
 
 
@@ -407,10 +407,10 @@ def build_parser():
         "--importance-sampling-level",
         type=str,
         choices=["token", "sequence", None],
-        default="token",
+        default=None,
         help=(
             "Level of importance sampling to use. "
-            "'token' uses token-level importance sampling, 'sequence' uses sequence-level, and None disables it."
+            "'token' uses token-level importance sampling, 'sequence' uses sequence-level, and None (default) disables it."
         ),
     )
     return parser
