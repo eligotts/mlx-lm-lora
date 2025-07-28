@@ -37,11 +37,29 @@ class GRPOTrainingArgs(SFTTrainingArgs):
         default=1e-4, metadata={"help": "The Epsilon for numerical stability."}
     )
     epsilon_high: float = field(
-        default=None, metadata={"help": "Upper-bound epsilon value for clipping. If not specified, it defaults to the same value as the lower-bound specified in argument epsilon."}
+        default=None, metadata={"help": "For DAPO Upper-bound epsilon value for clipping. If not specified, it defaults to the same value as the lower-bound specified in argument epsilon."}
     )
     max_completion_length: int = field(
         default=512, metadata={"help": "Number of Generations."}
     )
+    # sync_ref_model: bool = field(
+    #     default=False,
+    #     metadata={
+    #         "help": "If True, synchronizes the reference model with the main model. If False, uses the reference model as is."
+    #     },
+    # )
+    # ref_model_sync_steps: int = field(
+    #     default=100,
+    #     metadata={
+    #         "help": "Number of steps after which the reference model is synchronized with the main model. Only used if `sync_ref_model` is True."
+    #     },
+    # )
+    # mask_truncated_completions: bool = field(
+    #     default=True,
+    #     metadata={
+    #         "help": "For DAPO, if True, truncates completions to the maximum sequence length. If False, allows completions to exceed the maximum sequence length."
+    #     },
+    # )
     reference_model_path: str = field(
         default=None,
         metadata={
@@ -54,10 +72,27 @@ class GRPOTrainingArgs(SFTTrainingArgs):
             "help": "Temperature for sampling. The higher the temperature, the more random the completions."
         },
     )
+    # grpo_loss_type: str = field(
+    #     default="grpo",
+    #     metadata={
+    #         "help": "Type of loss to use for GRPO. Currently only 'grpo' is supported."
+    #     },
+    # )
     reward_weights: Optional[List[float]] = field(
         default=None,
         metadata={
             "help": "Weights for each reward function. Must match the number of reward functions. If `None`, all rewards are weighted equally with weight `1.0`."
+        },
+    )
+    importance_sampling_level: str = field(
+        default="token",
+        metadata={
+        "help": "importance_sampling_level (`str`, *optional*, defaults to 'token'): "
+            "Controls whether importance sampling ratios are computed at the 'token' or 'sequence' level. "
+            "keeps the raw per-token log-probability ratios (one weight per token).  'sequence' averages the "
+            "log-probability ratios across valid tokens to produce a single ratio per sequence. The "
+            "GSPO paper https://huggingface.co/papers/2507.18071) shows that sequence-level sampling often yields more "
+            "stable training and better alignment with  sequence-level rewards.."
         },
     )
 
@@ -161,6 +196,7 @@ def grpo_loss(
     reward_weights: Optional[List[float]] = None,
     batch_size: int = 1,
     is_validation: bool = False,
+    importance_sampling_level: str = "token",
 ):
     prompt_tokens, _, prompt_text, answer_text, type_info = batch
 
@@ -330,34 +366,48 @@ def grpo_loss(
 
     # Compute KL divergence using Schulman's approximator
     kl_div = (
-        mx.exp(ref_token_log_probs - token_log_probs)
-        - (ref_token_log_probs - token_log_probs)
-        - 1
+        mx.exp(ref_token_log_probs - token_log_probs) - (ref_token_log_probs - token_log_probs) - 1
     )
 
     # Create mask for valid tokens
     length_mask = mx.arange(inputs.shape[1] - 1)[None, :] < (lengths[:, None] - 1)
 
-    # Compute policy ratio
-    policy_ratio = mx.exp(
-        mx.array(token_log_probs - mx.stop_gradient(ref_token_log_probs))
-    )
+    # Compute log ratio for importance sampling
+    log_ratio = token_log_probs - mx.stop_gradient(ref_token_log_probs)
+
+    # Apply importance sampling based on level
+    if importance_sampling_level == "token":
+        log_importance_weights = log_ratio
+    elif importance_sampling_level == "sequence":
+        # Average log ratio over sequence length for each sequence
+        sequence_log_ratio = (log_ratio * length_mask).sum(axis=1) / mx.maximum(length_mask.sum(axis=1), 1.0)
+        log_importance_weights = mx.expand_dims(sequence_log_ratio, axis=1)
+    elif importance_sampling_level is None or importance_sampling_level == "none":
+        log_importance_weights = mx.zeros_like(log_ratio)
+    else:
+        raise ValueError(
+            f"Unknown importance sampling level: {importance_sampling_level}. "
+            "Possible values are 'token', 'sequence', or None."
+        )
+
+    coef_1 = mx.exp(log_importance_weights)
+    coef_2 = mx.clip(coef_1, 1 - epsilon, 1 + epsilon_high)
 
     # Apply PPO like clipping
     epsilon_high = epsilon_high if epsilon_high else epsilon
-    policy_ratio_cliped = mx.clip(policy_ratio, 1 - epsilon, 1 + epsilon_high)
+    coef_2 = mx.clip(coef_1, 1 - epsilon, 1 + epsilon_high)
 
     # Track clipping metrics
-    is_low_clipped = (policy_ratio < 1 - epsilon) & (advantages.reshape(-1, 1) < 0)
-    is_high_clipped = (policy_ratio > 1 + epsilon_high) & (
+    is_low_clipped = (coef_1 < 1 - epsilon) & (advantages.reshape(-1, 1) < 0)
+    is_high_clipped = (coef_1 > 1 + epsilon_high) & (
         advantages.reshape(-1, 1) > 0
     )
     is_region_clipped = is_low_clipped | is_high_clipped
 
 
     # Calculate both unclipped and clipped objectives
-    unclipped_obj = policy_ratio * advantages.reshape(-1, 1)
-    clipped_obj = policy_ratio_cliped * advantages.reshape(-1, 1)
+    unclipped_obj = coef_1 * advantages.reshape(-1, 1)
+    clipped_obj = coef_2 * advantages.reshape(-1, 1)
 
     # Take the minimum (pessimistic bound)
     per_token_loss = -mx.minimum(unclipped_obj, clipped_obj)

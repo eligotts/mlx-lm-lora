@@ -108,12 +108,17 @@ CONFIG_DEFAULTS = {
     # GRPO args
     "group_size": 4,
     "epsilon": 1e-4,
-    "epsilon_high": None,
     "max_completion_length": 512,
     "temperature": 0.8,
     "reward_weights": None,
     "reward_functions": None,
     "reward_functions_file": None,
+
+    # DAPO
+    "epsilon_high": None,
+
+    # GSPO args
+    "importance_sampling_level": "token",
 }
 
 
@@ -352,12 +357,6 @@ def build_parser():
         default=1e-4,
     )
     parser.add_argument(
-        "--epsilon-high",
-        type=float,
-        help="Upper-bound epsilon value for clipping. If not specified, it defaults to the same value as the lower-bound specified in argument epsilon.",
-        default=None,
-    )
-    parser.add_argument(
         "--temperature",
         type=float,
         help="Temperature for sampling. The higher the temperature, the more random the completions.",
@@ -393,6 +392,26 @@ def build_parser():
         "--list-reward-functions",
         action="store_true",
         help="List all available reward functions and exit",
+    )
+
+    # DAPO args
+    parser.add_argument(
+        "--epsilon-high",
+        type=float,
+        help="Upper-bound epsilon value for clipping. If not specified, it defaults to the same value as the lower-bound specified in argument epsilon.",
+        default=None,
+    )
+
+    # GSPO args
+    parser.add_argument(
+        "--importance-sampling-level",
+        type=str,
+        choices=["token", "sequence", None],
+        default="token",
+        help=(
+            "Level of importance sampling to use. "
+            "'token' uses token-level importance sampling, 'sequence' uses sequence-level, and None disables it."
+        ),
     )
     return parser
 
