@@ -25,6 +25,39 @@ from .grpo_reward_functions import (
 )
 
 
+def make_safe_sampler(tokenizer, temperature,
+                      top_p=1.0, min_p=0.0, min_tokens_to_keep=1,
+                      top_k=0, xtc_probability=0.0, xtc_threshold=0.0,
+                      xtc_special_tokens=None):
+
+    base_sampler = make_sampler(
+        temperature,
+        top_p,
+        min_p,
+        min_tokens_to_keep,
+        top_k,
+        xtc_probability,
+        xtc_threshold,
+        xtc_special_tokens,
+    )
+    vocab_size = tokenizer.vocab_size        # <= 151 665 for Qwen-2.5-0.5B
+
+    # Pre-compute a Boolean mask once; re-use every step.
+    # Shape: (1, 1, vocab_size_model) so it broadcasts on batches/time.
+    _mask = None                             # closed-over cell
+
+    def safe_sampler(logits):
+        nonlocal _mask
+        if logits.shape[-1] > vocab_size:
+            if _mask is None or _mask.shape[-1] != logits.shape[-1]:
+                _mask = mx.arange(logits.shape[-1]) >= vocab_size  # True where invalid
+            # functional masking – makes a *new* array, original logits untouched
+            logits = mx.where(_mask, float('-inf'), logits)
+        return base_sampler(logits)
+
+    return safe_sampler
+
+
 @dataclass
 class GRPOTrainingArgs(SFTTrainingArgs):
     group_size: int = field(
@@ -119,7 +152,8 @@ def generate_grpo(
         for j, prompt in enumerate(batch_prompts):
             for k in range(group_size):
                 prompt_text = tokenizer.decode(prompt)
-                sampler = make_sampler(
+                sampler = make_safe_sampler(
+                    tokenizer,
                     temperature,
                     top_p=1.0,
                     min_p=0.0,
@@ -131,17 +165,37 @@ def generate_grpo(
                 )
                 
                 prompt_cache = cache.make_prompt_cache(model)
-                completion: str | List[int] = generate(
-                    model=model,
-                    tokenizer=tokenizer,
-                    prompt=prompt_text,
-                    max_tokens=max_tokens,
-                    verbose=False,
-                    sampler=sampler,
-                    prompt_cache=prompt_cache,
-                )
-
-
+                try:
+                    completion: str | List[int] = generate(
+                        model=model,
+                        tokenizer=tokenizer,
+                        prompt=prompt_text,
+                        max_tokens=max_tokens,
+                        verbose=False,
+                        sampler=sampler,
+                        prompt_cache=prompt_cache,
+                    )
+                except IndexError as e:
+                    # Handle out-of-bounds token generation
+                    print(f"⚠️ Token index error during generation: {e}")
+                    print(f"Skipping this generation and using empty completion")
+                    completion = ""
+                    completion_ids = []
+                    all_completions.append(mx.array([]))
+                    all_completion_texts.append("")
+                    batch_indices.append(i + j)
+                    continue
+                except Exception as e:
+                    # Handle any other generation errors
+                    print(f"⚠️ Generation error: {e}")
+                    print(f"Using empty completion")
+                    completion = ""
+                    completion_ids = []
+                    all_completions.append(mx.array([]))
+                    all_completion_texts.append("")
+                    batch_indices.append(i + j)
+                    continue
+                
                 if isinstance(completion, str):
                     completion_ids = tokenizer.encode(completion)
                 else:
@@ -754,9 +808,11 @@ def train_grpo(
             stop = time.perf_counter()
 
             train_loss = mx.distributed.all_sum(losses).item() / (steps * world_size)
-            avg_metrics = {
-                k: v / (steps * world_size) for k, v in accumulated_metrics.items()
-            }
+            avg_metrics = {}
+            for k, v in accumulated_metrics.items():
+                val = v / (steps * world_size)
+                # Convert to Python scalar if it's an MLX array
+                avg_metrics[k] = val.item() if hasattr(val, 'item') else val
             n_tokens = mx.distributed.all_sum(n_tokens).item()
             learning_rate = optimizer.learning_rate.item()
             it_sec = args.steps_per_report / (stop - start)
