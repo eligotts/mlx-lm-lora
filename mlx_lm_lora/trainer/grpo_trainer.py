@@ -41,24 +41,6 @@ class GRPOTrainingArgs(SFTTrainingArgs):
     max_completion_length: int = field(
         default=512, metadata={"help": "Number of Generations."}
     )
-    # sync_ref_model: bool = field(
-    #     default=False,
-    #     metadata={
-    #         "help": "If True, synchronizes the reference model with the main model. If False, uses the reference model as is."
-    #     },
-    # )
-    # ref_model_sync_steps: int = field(
-    #     default=100,
-    #     metadata={
-    #         "help": "Number of steps after which the reference model is synchronized with the main model. Only used if `sync_ref_model` is True."
-    #     },
-    # )
-    # mask_truncated_completions: bool = field(
-    #     default=True,
-    #     metadata={
-    #         "help": "For DAPO, if True, truncates completions to the maximum sequence length. If False, allows completions to exceed the maximum sequence length."
-    #     },
-    # )
     reference_model_path: str = field(
         default=None,
         metadata={
