@@ -21,7 +21,7 @@ class GRPODataset:
             prompt_str = str(item[prompt_key])
             answer_str = str(item[answer_key])
             type_info = item.get(type_key, None)
-            default_system_str = "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>."
+            default_system_str = "You are given a problem. Think about the problem and provide your working out. Place it between <think> and </think>. Then, provide your solution between <answer> </answer>."
             system_str = item.get(system_key, default_system_str)
             prompt_tokens = tokenizer.apply_chat_template(
                 [

@@ -19,7 +19,6 @@ from .grpo_reward_functions import (
     RewardFunctions,
     r1_accuracy_reward_func,
     r1_count_xml,
-    r1_extract_xml_answer,
     r1_int_reward_func,
     r1_soft_format_reward_func,
     r1_strict_format_reward_func,
@@ -37,7 +36,7 @@ class GRPOTrainingArgs(SFTTrainingArgs):
         default=1e-4, metadata={"help": "The Epsilon for numerical stability."}
     )
     epsilon_high: float = field(
-        default=None, metadata={"help": "Upper-bound epsilon value for clipping. If not specified, it defaults to the same value as the lower-bound specified in argument epsilon."}
+        default=None, metadata={"help": "For DAPO Upper-bound epsilon value for clipping. If not specified, it defaults to the same value as the lower-bound specified in argument epsilon."}
     )
     max_completion_length: int = field(
         default=512, metadata={"help": "Number of Generations."}
@@ -54,10 +53,27 @@ class GRPOTrainingArgs(SFTTrainingArgs):
             "help": "Temperature for sampling. The higher the temperature, the more random the completions."
         },
     )
+    grpo_loss_type: str = field(
+        default="grpo",
+        metadata={
+            "help": "Type of loss to use for GRPO. Supported: 'grpo', 'bnpo', 'dr_grpo'."
+        }
+    )
     reward_weights: Optional[List[float]] = field(
         default=None,
         metadata={
             "help": "Weights for each reward function. Must match the number of reward functions. If `None`, all rewards are weighted equally with weight `1.0`."
+        },
+    )
+    importance_sampling_level: str = field(
+        default=None,
+        metadata={
+            "help": "importance_sampling_level (`str`, *optional*, defaults to None): "
+                "Controls whether importance sampling ratios are computed at the 'token' or 'sequence' level. "
+                "keeps the raw per-token log-probability ratios (one weight per token).  'sequence' averages the "
+                "log-probability ratios across valid tokens to produce a single ratio per sequence. The "
+                "GSPO paper https://huggingface.co/papers/2507.18071) shows that sequence-level sampling often yields more "
+                "stable training and better alignment with  sequence-level rewards.."
         },
     )
 
@@ -94,7 +110,6 @@ def generate_grpo(
     all_completion_texts = []
     batch_indices = []
 
-    # end_sequence = mx.array(tokenizer.encode(end_token))  # Removed as per instructions
     total_samples = len(prompt_tokens)
 
     for i in range(0, total_samples, batch_size):
@@ -114,6 +129,7 @@ def generate_grpo(
                     xtc_threshold=0.0,
                     xtc_special_tokens=tokenizer.encode("\n") + list(tokenizer.eos_token_ids),
                 )
+                
                 prompt_cache = cache.make_prompt_cache(model)
                 completion: str | List[int] = generate(
                     model=model,
@@ -124,6 +140,8 @@ def generate_grpo(
                     sampler=sampler,
                     prompt_cache=prompt_cache,
                 )
+
+
                 if isinstance(completion, str):
                     completion_ids = tokenizer.encode(completion)
                 else:
@@ -160,7 +178,8 @@ def grpo_loss(
     temperature: float = 0.8,
     reward_weights: Optional[List[float]] = None,
     batch_size: int = 1,
-    is_validation: bool = False,
+    importance_sampling_level: str = "token",
+    grpo_loss_type: str = "grpo",
 ):
     prompt_tokens, _, prompt_text, answer_text, type_info = batch
 
@@ -330,34 +349,48 @@ def grpo_loss(
 
     # Compute KL divergence using Schulman's approximator
     kl_div = (
-        mx.exp(ref_token_log_probs - token_log_probs)
-        - (ref_token_log_probs - token_log_probs)
-        - 1
+        mx.exp(ref_token_log_probs - token_log_probs) - (ref_token_log_probs - token_log_probs) - 1
     )
 
     # Create mask for valid tokens
     length_mask = mx.arange(inputs.shape[1] - 1)[None, :] < (lengths[:, None] - 1)
 
-    # Compute policy ratio
-    policy_ratio = mx.exp(
-        mx.array(token_log_probs - mx.stop_gradient(ref_token_log_probs))
-    )
+    # Compute log ratio for importance sampling
+    log_ratio = token_log_probs - mx.stop_gradient(ref_token_log_probs)
+
+    # Apply importance sampling based on level
+    if importance_sampling_level == "token":
+        log_importance_weights = log_ratio
+    elif importance_sampling_level == "sequence":
+        # Average log ratio over sequence length for each sequence
+        sequence_log_ratio = (log_ratio * length_mask).sum(axis=1) / mx.maximum(length_mask.sum(axis=1), 1.0)
+        log_importance_weights = mx.expand_dims(sequence_log_ratio, axis=1)
+    elif importance_sampling_level is None or importance_sampling_level == "none":
+        log_importance_weights = mx.zeros_like(log_ratio)
+    else:
+        raise ValueError(
+            f"Unknown importance sampling level: {importance_sampling_level}. "
+            "Possible values are 'token', 'sequence', or None."
+        )
+
+    # Calculate importance weights
+    coef_1 = mx.exp(log_importance_weights)
 
     # Apply PPO like clipping
     epsilon_high = epsilon_high if epsilon_high else epsilon
-    policy_ratio_cliped = mx.clip(policy_ratio, 1 - epsilon, 1 + epsilon_high)
+    coef_2 = mx.clip(coef_1, 1 - epsilon, 1 + epsilon_high)
 
     # Track clipping metrics
-    is_low_clipped = (policy_ratio < 1 - epsilon) & (advantages.reshape(-1, 1) < 0)
-    is_high_clipped = (policy_ratio > 1 + epsilon_high) & (
+    is_low_clipped = (coef_1 < 1 - epsilon) & (advantages.reshape(-1, 1) < 0)
+    is_high_clipped = (coef_1 > 1 + epsilon_high) & (
         advantages.reshape(-1, 1) > 0
     )
     is_region_clipped = is_low_clipped | is_high_clipped
 
 
     # Calculate both unclipped and clipped objectives
-    unclipped_obj = policy_ratio * advantages.reshape(-1, 1)
-    clipped_obj = policy_ratio_cliped * advantages.reshape(-1, 1)
+    unclipped_obj = coef_1 * advantages.reshape(-1, 1)
+    clipped_obj = coef_2 * advantages.reshape(-1, 1)
 
     # Take the minimum (pessimistic bound)
     per_token_loss = -mx.minimum(unclipped_obj, clipped_obj)
@@ -366,10 +399,15 @@ def grpo_loss(
     if beta != 0.0:
         per_token_loss = per_token_loss + beta * kl_div
 
-    # Average over tokens
-    loss = (
-        per_token_loss * length_mask
-    ).sum() / length_mask.sum()
+    
+    if grpo_loss_type == "grpo":
+        loss = (per_token_loss * length_mask).sum() / length_mask.sum()
+    elif grpo_loss_type == "bnpo":
+        loss = (per_token_loss * length_mask).sum() / mx.maximum(length_mask.sum(), 1.0)
+    elif grpo_loss_type == "dr_grpo":
+        loss = (per_token_loss * length_mask).sum() / (per_token_loss.shape[0] * max_tokens)
+    else:
+        raise ValueError(f"Unknown loss type: {grpo_loss_type}")
 
     # Calculate mean KL divergence for metrics
     mean_kl = ((kl_div * length_mask).sum(axis=1) / length_mask.sum(axis=1)).mean()
@@ -427,27 +465,6 @@ def grpo_loss(
         ),
         **reward_metrics,
     }
-
-    if is_validation and all_completion_texts:
-        tqdm.write("\n=== Validation Sample Details ===")
-        last_prompt_idx = batch_indices[-1] if batch_indices else 0
-        if last_prompt_idx < len(prompt_text):
-            tqdm.write(f"\n📋 Raw Prompt:\n{prompt_text[last_prompt_idx]}")
-            tqdm.write("\n" + "=" * 10 + "\n")
-            if last_prompt_idx < len(prompt_tokens):
-                actual_prompt = tokenizer.decode(prompt_tokens[last_prompt_idx])
-                tqdm.write(f"\n🔄 Model Input:\n{actual_prompt}")
-                tqdm.write("\n" + "=" * 10 + "\n")
-        tqdm.write(f"\n📝 Generation:\n{all_completion_texts[-1]}")
-        tqdm.write("\n" + "=" * 10 + "\n")
-        if last_prompt_idx < len(answer_text):
-            tqdm.write(f"\n✅ Answer:\n{answer_text[last_prompt_idx]}")
-            tqdm.write("\n" + "=" * 10 + "\n")
-        if "r1_extract_xml_answer" in globals():
-            tqdm.write(
-                f"\n🔍 Extracted Answer:\n{r1_extract_xml_answer(all_completion_texts[-1])}"
-            )
-        tqdm.write("\n" + "=" * 35 + "\n")
 
     mx.clear_cache()
 
@@ -526,6 +543,8 @@ def evaluate_grpo(
     ],
     loss_fn: callable = grpo_loss,
     iterate_batches: callable = iterate_grpo_batches,
+    grpo_loss_type: str = "grpo",
+    importance_sampling_level: str = "token",
 ):
     all_losses = 0
     ntokens = 0
@@ -553,7 +572,8 @@ def evaluate_grpo(
             ref_model=ref_model,
             temperature=temperature,
             max_tokens=max_tokens,
-            is_validation=True,
+            importance_sampling_level=importance_sampling_level,
+            grpo_loss_type=grpo_loss_type,
         )
 
         all_losses += losses * toks
@@ -637,6 +657,9 @@ def train_grpo(
             epsilon=args.epsilon,
             epsilon_high=args.epsilon_high,
             ref_model=ref_model,
+            grpo_loss_type=args.grpo_loss_type,
+            max_tokens=args.max_completion_length,
+            importance_sampling_level=args.importance_sampling_level,
         )
 
         if (it + 1) % args.gradient_accumulation_steps == 0:
@@ -697,6 +720,7 @@ def train_grpo(
                 epsilon_high=args.epsilon_high,
                 temperature=args.temperature,
                 iterate_batches=iterate_batches,
+                grpo_loss_type=args.grpo_loss_type,
             )
             val_time = time.perf_counter() - stop
             if rank == 0:
