@@ -1,0 +1,21 @@
+[project]
+name = "mlx-lm-lora"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "datasets>=4.0.0",
+    "gradio>=5.38.0",
+    "ipykernel>=6.29.5",
+    "jinja2>=3.1.6",
+    "mlx>=0.25.2",
+    "mlx-lm>=0.24.1",
+    "mlx-optimizers>=0.4.1",
+    "numpy>=2.3.1",
+    "protobuf>=6.31.1",
+    "pyyaml>=6.0.2",
+    "tqdm>=4.67.1",
+    "transformers[sentencepiece]>=4.39.3",
+    "wandb>=0.21.0",
+]
