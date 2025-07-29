@@ -142,3 +142,5 @@ test*.txt
 .test*.txt
 
 *adapters*
+
+examples/tests/
