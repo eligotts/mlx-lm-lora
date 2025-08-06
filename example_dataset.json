@@ -1,0 +1,52 @@
+[
+  {
+    "prompt": "What is 15 + 27?",
+    "answer": "15 + 27 = 42",
+    "type": "math"
+  },
+  {
+    "prompt": "Calculate the area of a rectangle with length 8 and width 5.",
+    "answer": "The area is 8 × 5 = 40 square units",
+    "type": "math"
+  },
+  {
+    "prompt": "Solve for x: 3x - 7 = 14",
+    "answer": "3x - 7 = 14\n3x = 21\nx = 7",
+    "type": "math"
+  },
+  {
+    "prompt": "What is the capital of France?",
+    "answer": "The capital of France is Paris",
+    "type": "factual"
+  },
+  {
+    "prompt": "Explain the process of photosynthesis in simple terms.",
+    "answer": "Photosynthesis is the process where plants use sunlight, water, and carbon dioxide to make glucose (food) and oxygen. The chlorophyll in leaves captures light energy to power this conversion.",
+    "type": "reasoning"
+  },
+  {
+    "prompt": "Why do we have seasons?",
+    "answer": "We have seasons because Earth's axis is tilted at about 23.5 degrees. As Earth orbits the sun, different parts receive varying amounts of direct sunlight throughout the year, creating seasons.",
+    "type": "reasoning"
+  },
+  {
+    "prompt": "List three primary colors.",
+    "answer": "The three primary colors are:\n1. Red\n2. Blue\n3. Yellow",
+    "type": "factual"
+  },
+  {
+    "prompt": "What is 124 divided by 4?",
+    "answer": "124 ÷ 4 = 31",
+    "type": "math"
+  },
+  {
+    "prompt": "Describe the water cycle.",
+    "answer": "The water cycle consists of evaporation (water turns to vapor), condensation (vapor forms clouds), precipitation (rain/snow falls), and collection (water returns to oceans/lakes).",
+    "type": "reasoning"
+  },
+  {
+    "prompt": "What is the largest planet in our solar system?",
+    "answer": "The largest planet in our solar system is Jupiter",
+    "type": "factual"
+  }
+]

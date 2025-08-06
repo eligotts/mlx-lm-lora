@@ -1,8 +1,9 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pathlib import Path
 from tqdm import tqdm
 import time
+import threading
 
 from mlx.utils import tree_flatten
 import mlx.core as mx
@@ -12,6 +13,13 @@ import numpy as np
 from mlx_lm.tuner.callbacks import TrainingCallback
 
 from .sft_trainer import SFTTrainingArgs, average_gradients, grad_checkpoint
+from .async_batch_generator import (
+    AsyncBatchGenerator,
+    AsyncDataLoaderWrapper,
+    BatchRequest,
+    BatchResult,
+    InferenceClient,
+)
 
 from mlx_lm.models import cache
 from mlx_lm.generate import generate, make_sampler
@@ -108,6 +116,48 @@ class GRPOTrainingArgs(SFTTrainingArgs):
                 "GSPO paper https://huggingface.co/papers/2507.18071) shows that sequence-level sampling often yields more "
                 "stable training and better alignment with  sequence-level rewards.."
         },
+    )
+    # Async training configuration
+    enable_async_generation: bool = field(
+        default=False,
+        metadata={"help": "Enable asynchronous batch generation for train-one-off methodology."},
+    )
+    num_batches_ahead: int = field(
+        default=1,
+        metadata={"help": "Number of batches to generate ahead of training."},
+    )
+    async_generation_timeout: float = field(
+        default=600.0,
+        metadata={"help": "Timeout in seconds for async batch generation."},
+    )
+    async_max_queue_size: Optional[int] = field(
+        default=None,
+        metadata={"help": "Maximum number of batches in async generation queue."},
+    )
+    num_iterations: int = field(
+        default=1,
+        metadata={"help": "Number of training iterations per generated batch."},
+    )
+    inference_server_host: str = field(
+        default="localhost",
+        metadata={"help": "Host address of the inference server."},
+    )
+    inference_server_port: int = field(
+        default=8000,
+        metadata={"help": "Port of the inference server."},
+    )
+    # LoRA configuration for async training
+    lora_rank: int = field(
+        default=16,
+        metadata={"help": "LoRA adapter rank."},
+    )
+    lora_scale: float = field(
+        default=10.0,
+        metadata={"help": "LoRA adapter scale."},
+    )
+    lora_dropout: float = field(
+        default=0.0,
+        metadata={"help": "LoRA adapter dropout."},
     )
 
 
@@ -651,6 +701,165 @@ def evaluate_grpo(
     return avg_loss, ntokens, avg_metrics
 
 
+def prepare_async_inputs(
+    async_generator: AsyncBatchGenerator,
+    async_dataloader: AsyncDataLoaderWrapper,
+    step: int,
+    gradient_accumulation_steps: int,
+    num_iterations: int,
+    inference_client: InferenceClient,
+    model: nn.Module,
+    tokenizer,
+    reward_funcs: List[RewardFunctions],
+    args: GRPOTrainingArgs,
+    last_loaded_step: int = -1,
+) -> tuple:
+    """Prepare inputs with async batch generation and weight synchronization.
+    
+    Returns:
+        Tuple of (completions, completion_texts, batch_indices, batch_data, should_sync_weights)
+    """
+    generate_every = gradient_accumulation_steps * num_iterations
+    
+    print(f"\n[prepare_async_inputs] Step {step}:")
+    print(f"  - Generate every: {generate_every} steps")
+    print(f"  - Should generate: {step % generate_every == 0}")
+    
+    # Only generate new completions every generate_every steps
+    if step % generate_every == 0:
+        print(f"[prepare_async_inputs] Generating new completions")
+        
+        # Check if we need to sync weights
+        should_sync_weights = step > last_loaded_step
+        print(f"  - Should sync weights: {should_sync_weights} (step {step} > last_loaded {last_loaded_step})")
+        
+        # Calculate which batch we need now
+        batch_id_to_retrieve = step // generate_every
+        print(f"  - Batch ID to retrieve: {batch_id_to_retrieve}")
+        
+        # Calculate target: stay num_batches_ahead batches ahead
+        target_batch_id = batch_id_to_retrieve + async_generator.num_batches_ahead
+        print(f"  - Target batch ID (ahead): {target_batch_id}")
+        
+        # Get current batch data
+        current_batch = next(async_dataloader)
+        print(f"  - Got current batch from dataloader")
+        
+        # Submit missing batches to maintain pipeline
+        next_batch_id = getattr(async_generator, '_next_batch_id', batch_id_to_retrieve)
+        print(f"  - Next batch ID to submit: {next_batch_id}")
+        
+        batches_submitted = 0
+        for batch_id in range(next_batch_id, target_batch_id + 1):
+            # Calculate batch offset for lookahead
+            batch_offset = batch_id - batch_id_to_retrieve
+            
+            # Peek ahead to get future batch data
+            future_batches = async_dataloader.peek_ahead(batch_offset + 1)
+            
+            if len(future_batches) > batch_offset:
+                future_batch = future_batches[batch_offset]
+                prompt_tokens, _, prompt_text, answer_text, type_info = future_batch
+                
+                print(f"  - Submitting batch {batch_id} (offset {batch_offset})")
+                
+                # Create batch request
+                env_inputs = {
+                    'prompt_tokens': prompt_tokens,
+                    'prompt_texts': prompt_text,
+                    'answer_texts': answer_text,
+                    'types': type_info,
+                    'tokenizer': tokenizer,
+                    'max_tokens': args.max_completion_length,
+                    'group_size': args.group_size,
+                    'temperature': args.temperature,
+                    'batch_size': args.batch_size,
+                }
+                
+                request = BatchRequest(
+                    batch_id=batch_id,
+                    env_inputs=env_inputs,
+                    generation_timeout=args.async_generation_timeout,
+                )
+                
+                async_generator.submit_batch(request)
+                batches_submitted += 1
+            else:
+                print(f"  - WARNING: Not enough future batches for batch {batch_id}")
+        
+        print(f"  - Submitted {batches_submitted} batches")
+        async_generator._next_batch_id = target_batch_id + 1
+        
+        # Retrieve the batch we need right now
+        print(f"  - Retrieving batch {batch_id_to_retrieve}")
+        result = async_generator.get_batch(batch_id_to_retrieve)
+        
+        if result.error:
+            raise RuntimeError(f"Batch generation failed: {result.error}")
+            
+        completions = result.processed_results.get('completions', [])
+        completion_texts = result.processed_results.get('completion_texts', [])
+        batch_indices = result.processed_results.get('batch_indices', [])
+        
+        print(f"  - Retrieved {len(completions)} completions")
+        
+        return completions, completion_texts, batch_indices, current_batch, should_sync_weights
+    else:
+        # Reuse existing completions
+        print(f"[prepare_async_inputs] Reusing existing completions")
+        return None, None, None, next(async_dataloader), False
+
+
+def sync_model_weights(
+    model: nn.Module,
+    inference_client: InferenceClient,
+    is_main_process: bool = True,
+    adapter_config: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Synchronize model weights to inference server.
+    
+    Args:
+        model: Model to sync weights from
+        inference_client: Client to send weights to
+        is_main_process: Whether this is the main process
+        adapter_config: Optional adapter configuration for LoRA
+    """
+    print(f"[sync_model_weights] Starting weight sync")
+    print(f"  - Is main process: {is_main_process}")
+    
+    if not is_main_process:
+        print(f"[sync_model_weights] Not main process, skipping")
+        return
+        
+    # Check if generation is in progress
+    is_generating = getattr(inference_client, 'is_generating', False)
+    print(f"[sync_model_weights] Is generating: {is_generating}")
+    
+    # Wait for any ongoing generation to complete
+    wait_count = 0
+    while is_generating:
+        if wait_count == 0:
+            print(f"[sync_model_weights] Waiting for generation to complete...")
+        time.sleep(0.5)
+        is_generating = getattr(inference_client, 'is_generating', False)
+        wait_count += 1
+        if wait_count % 10 == 0:
+            print(f"[sync_model_weights] Still waiting ({wait_count * 0.5}s)...")
+    
+    if wait_count > 0:
+        print(f"[sync_model_weights] Generation complete after {wait_count * 0.5}s")
+    
+    # Extract model weights (only trainable parameters for LoRA)
+    print(f"[sync_model_weights] Extracting trainable parameters")
+    model_state = dict(tree_flatten(model.trainable_parameters()))
+    print(f"[sync_model_weights] Found {len(model_state)} trainable parameters")
+    
+    # Update weights on inference server
+    print(f"[sync_model_weights] Uploading weights to inference server")
+    inference_client.update_weights(model_state, adapter_config)
+    print(f"[sync_model_weights] Weight sync complete")
+
+
 def train_grpo(
     model: nn.Module,
     ref_model: Optional[nn.Module],
@@ -682,19 +891,91 @@ def train_grpo(
         grad_checkpoint(model.layers[0])
 
     state = [model.state, optimizer.state]
+    
+    # Set up async generation if enabled
+    async_generator = None
+    async_dataloader = None
+    inference_client = None
+    last_loaded_step = -1
+    buffered_completions = None
+    buffered_completion_texts = None
+    buffered_batch_indices = None
+    adapter_config = None
+    
+    if args.enable_async_generation:
+        print("\n[train_grpo] Setting up async generation")
+        # Import the MLX inference client
+        from .example_inference_client import MLXInferenceClient
+        
+        # Create inference client
+        inference_client = MLXInferenceClient(
+            host=args.inference_server_host,
+            port=args.inference_server_port,
+        )
+        print(f"[train_grpo] Created MLX inference client: {args.inference_server_host}:{args.inference_server_port}")
+        
+        # Prepare adapter config for LoRA (if model has LoRA layers)
+        if hasattr(model, 'model_type'):
+            # Count LoRA layers
+            num_lora_layers = sum(1 for _ in model.trainable_parameters())
+            if num_lora_layers > 0:
+                adapter_config = {
+                    "model_type": model.model_type,
+                    "num_layers": len(model.layers) if hasattr(model, 'layers') else -1,
+                    "lora_parameters": {
+                        "rank": getattr(args, 'lora_rank', 16),
+                        "scale": getattr(args, 'lora_scale', 10.0),
+                        "dropout": getattr(args, 'lora_dropout', 0.0),
+                    },
+                    "fine_tune_type": "lora",
+                    "target_modules": ["self_attn.q_proj", "self_attn.v_proj"],
+                    "trainable": True
+                }
+        
+        # Create async batch generator
+        print(f"[train_grpo] Creating async batch generator:")
+        print(f"  - Batches ahead: {args.num_batches_ahead}")
+        print(f"  - Max queue size: {args.async_max_queue_size}")
+        print(f"  - Generation timeout: {args.async_generation_timeout}s")
+        
+        async_generator = AsyncBatchGenerator(
+            inference_client=inference_client,
+            num_batches_ahead=args.num_batches_ahead,
+            max_queue_size=args.async_max_queue_size,
+            generation_timeout=args.async_generation_timeout,
+        )
+        
+        # Wrap dataloader with async wrapper
+        print(f"[train_grpo] Creating async dataloader wrapper")
+        base_dataloader = iterate_batches(
+            dataset=train_dataset,
+            batch_size=args.batch_size,
+            max_seq_length=args.max_seq_length,
+            train=True,
+        )
+        async_dataloader = AsyncDataLoaderWrapper(
+            dataloader=base_dataloader,
+            buffer_size=args.num_batches_ahead + 2,
+        )
+        print(f"[train_grpo] Async setup complete")
 
-    def step(batch):
+    def step(batch, completions=None, completion_texts=None, batch_indices=None):
         prompt_tokens, targets, prompt_lens, target_lens, type_info = batch
 
-        all_completions, all_completion_texts, batch_indices = generate_grpo(
-            model=model,
-            tokenizer=tokenizer,
-            prompt_tokens=prompt_tokens,
-            max_tokens=args.max_completion_length,
-            group_size=args.group_size,
-            temperature=args.temperature,
-            batch_size=args.batch_size,
-        )
+        if completions is None:
+            # Synchronous generation (fallback or when async is disabled)
+            all_completions, all_completion_texts, batch_indices = generate_grpo(
+                model=model,
+                tokenizer=tokenizer,
+                prompt_tokens=prompt_tokens,
+                max_tokens=args.max_completion_length,
+                group_size=args.group_size,
+                temperature=args.temperature,
+                batch_size=args.batch_size,
+            )
+        else:
+            all_completions = completions
+            all_completion_texts = completion_texts
 
         mx.clear_cache()
 
@@ -748,12 +1029,58 @@ def train_grpo(
     start = time.perf_counter()
     pbar = tqdm(range(1, args.iters + 1), desc="Training", disable=rank != 0)
     for it in pbar:
-        batch = next(iterate_batches(
-            dataset=train_dataset,
-            batch_size=args.batch_size,
-            max_seq_length=args.max_seq_length,
-            train=True,
-        ))
+        if args.enable_async_generation:
+            print(f"\n[train_grpo] === Iteration {it} ===")
+            # Use async generation pipeline
+            completions, completion_texts, batch_indices, batch, should_sync_weights = prepare_async_inputs(
+                async_generator=async_generator,
+                async_dataloader=async_dataloader,
+                step=it - 1,  # Zero-indexed step
+                gradient_accumulation_steps=args.gradient_accumulation_steps,
+                num_iterations=args.num_iterations,
+                inference_client=inference_client,
+                model=model,
+                tokenizer=tokenizer,
+                reward_funcs=reward_funcs,
+                args=args,
+                last_loaded_step=last_loaded_step,
+            )
+            
+            # Sync weights if needed
+            if should_sync_weights:
+                print(f"[train_grpo] Syncing weights to inference server...")
+                sync_model_weights(
+                    model=model,
+                    inference_client=inference_client,
+                    is_main_process=(rank == 0),
+                    adapter_config=adapter_config,
+                )
+                last_loaded_step = it - 1
+                print(f"[train_grpo] Weights synced, last_loaded_step = {last_loaded_step}")
+                
+            # Use buffered completions if we're reusing
+            if completions is None and buffered_completions is not None:
+                print(f"[train_grpo] Using buffered completions")
+                completions = buffered_completions
+                completion_texts = buffered_completion_texts
+                batch_indices = buffered_batch_indices
+            elif completions is not None:
+                # Buffer the new completions for reuse
+                print(f"[train_grpo] Buffering new completions for reuse")
+                buffered_completions = completions
+                buffered_completion_texts = completion_texts
+                buffered_batch_indices = batch_indices
+        else:
+            # Standard synchronous generation
+            batch = next(iterate_batches(
+                dataset=train_dataset,
+                batch_size=args.batch_size,
+                max_seq_length=args.max_seq_length,
+                train=True,
+            ))
+            completions = None
+            completion_texts = None
+            batch_indices = None
 
         if it == 1 or it % args.steps_per_eval == 0 or it == args.iters:
             stop = time.perf_counter()
@@ -794,7 +1121,22 @@ def train_grpo(
 
             start = time.perf_counter()
 
-        lvalue, toks, metrics = step(batch)
+        print(f"[train_grpo] Calling step function")
+        print(f"  - Has completions: {completions is not None}")
+        if completions is not None:
+            print(f"  - Num completions: {len(completions)}")
+        
+        lvalue, toks, metrics = step(
+            batch,
+            completions=completions,
+            completion_texts=completion_texts,
+            batch_indices=batch_indices
+        )
+        
+        print(f"[train_grpo] Step complete:")
+        print(f"  - Loss: {lvalue:.4f}")
+        print(f"  - Tokens: {toks}")
+        
         losses += lvalue
         n_tokens += toks
         steps += 1
@@ -874,3 +1216,7 @@ def train_grpo(
     adapter_weights = dict(tree_flatten(model.trainable_parameters()))
     mx.save_safetensors(str(args.adapter_file), adapter_weights)
     tqdm.write(f"Saved final weights to {args.adapter_file}.")
+    
+    # Cleanup async resources
+    if async_generator:
+        async_generator.shutdown()
