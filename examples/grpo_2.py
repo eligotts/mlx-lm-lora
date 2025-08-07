@@ -6,6 +6,7 @@
 # Configure WandB - paste your API key when prompted
 import wandb
 
+import os
 # Set your WandB API key here
 WANDB_API_KEY = os.getenv("WANDB_API_KEY")  # <-- Replace with your actual WandB API key
 
@@ -35,8 +36,6 @@ import mlx.core as mx
 from pathlib import Path
 import re
 import os
-import os
-
 
 # %% [markdown]
 # # Define the Args
@@ -44,7 +43,7 @@ import os
 # %%
 hf_token = os.getenv("HF_TOKEN") # <-- Add you HF Token here
 
-model_name = "Qwen/Qwen2-0.5B-Instruct-MLX"
+model_name = "/Users/eligottlieb/.lmstudio/models/lmstudio-community/Qwen3-0.6B-MLX-bf16"
 user_name = "mlx-community"
 
 adapter_path = "/Users/eligottlieb/Documents/mlx-lm-lora/examples/tests"
@@ -360,6 +359,18 @@ wandb_callback = WandBCallback(
     }
 )
 
+# ===== NEW: Inference Server Integration =====
+# To enable real-time adapter weight updates to an inference server:
+# 1. Set upload_adapters_to_server=True
+# 2. Set inference_server_url to your server address
+# This will automatically upload updated LoRA weights after each optimizer update
+# allowing the inference server to use the latest model weights for generation.
+#
+# Example:
+#   upload_adapters_to_server=True,
+#   inference_server_url="http://10.0.0.180:8000",
+# ==============================================
+
 train_grpo(
     model=model,
     ref_model=None,  # Use None to use the same model as reference
@@ -379,11 +390,14 @@ train_grpo(
         grad_checkpoint=True,
         gradient_accumulation_steps=5,
         beta=0.9,
-        group_size=4,
+        group_size=5,
         epsilon=1e-4,
         epsilon_high=None,
-        max_completion_length=1028,
+        max_completion_length=512,
         reward_weights=custom_reward_weights,  # Use this instead of reward_scaling
+        # Uncomment these lines to enable inference server integration:
+        # upload_adapters_to_server=True,
+        # inference_server_url="http://10.0.0.180:8000",
     ),
     reward_funcs=custom_reward_functions,  # Pass the custom reward functions
     training_callback=wandb_callback  # Pass the WandB callback here

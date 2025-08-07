@@ -9,3 +9,5 @@ tqdm
 datasets
 mlx-optimizers
 gradio
+asyncio
+aiohttp
