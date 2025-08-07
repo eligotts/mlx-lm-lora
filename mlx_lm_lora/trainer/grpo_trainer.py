@@ -3,6 +3,11 @@ from typing import List, Optional
 from pathlib import Path
 from tqdm import tqdm
 import time
+import asyncio
+import aiohttp
+import json
+import tempfile
+import shutil
 
 from mlx.utils import tree_flatten
 import mlx.core as mx
@@ -109,6 +114,18 @@ class GRPOTrainingArgs(SFTTrainingArgs):
                 "stable training and better alignment with  sequence-level rewards.."
         },
     )
+    inference_server_url: str = field(
+        default="http://10.0.0.180:8000",
+        metadata={
+            "help": "URL of the inference server for GRPO generation and adapter updates."
+        },
+    )
+    upload_adapters_to_server: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to upload adapter weights to the inference server after each update."
+        },
+    )
 
 
 def get_per_token_logps(model: nn.Module, inputs, lengths):
@@ -128,6 +145,152 @@ def get_per_token_logps(model: nn.Module, inputs, lengths):
     mx.eval(logits)
     return per_token_logps
 
+async def send_single_request(
+    session,
+    base_url: str,
+    prompt: str,
+    tokenizer,
+    max_tokens: int,
+    temperature: float,
+    request_id: str,
+    step_id: Optional[int] = None,
+):
+    """Send a single request to the inference server."""
+    # Format prompt for chat template
+    prompt_fm = [{"role": "user", "content": prompt}]
+    prompt_fm = tokenizer.apply_chat_template(prompt_fm, add_generation_prompt=True, tokenize=False)
+    
+    payload = {
+        "prompt": prompt_fm,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "logprobs": 1,  # Request logprobs for GRPO
+        "step_id": step_id or 100,
+        "request_id": request_id
+    }
+    
+    try:
+        async with session.post(f"{base_url}/generate", json=payload) as resp:
+            result = await resp.json()
+            completion_text = result.get('text', '')
+            # Truncate text for display if it's too long
+            display_text = completion_text[:100] + "..." if len(completion_text) > 100 else completion_text
+            display_text = display_text.replace('\n', ' ')  # Replace newlines for cleaner display
+            print(f"✓ Received {request_id}: {len(result.get('completion_ids', []))} tokens | Text: '{display_text}'")
+            return result
+    except Exception as e:
+        print(f"⚠️ Error calling inference server for {request_id}: {e}")
+        # Return empty result on error
+        return {
+            "completion_ids": [],
+            "text": "",
+            "finish_reason": "error"
+        }
+
+
+async def generate_async_batch(
+    session,
+    base_url: str,
+    prompts: List[str],
+    tokenizer,
+    max_tokens: int,
+    temperature: float,
+    step_id: Optional[int] = None,
+):
+    """Send batch requests to inference server in parallel and collect responses."""
+    print(f"\n📤 Sending batch of {len(prompts)} prompts to inference server...")
+    
+    # Create all requests as coroutines
+    tasks = []
+    for idx, prompt in enumerate(prompts):
+        request_id = f"grpo-{idx}-{step_id or 0}"
+        task = send_single_request(
+            session=session,
+            base_url=base_url,
+            prompt=prompt,
+            tokenizer=tokenizer,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            request_id=request_id,
+            step_id=step_id,
+        )
+        tasks.append(task)
+    
+    # Execute all requests in parallel
+    print(f"⏳ Waiting for all {len(tasks)} requests to complete...")
+    results = await asyncio.gather(*tasks)
+    print(f"✅ Batch complete! Received {len(results)} responses\n")
+    
+    return results
+
+
+async def upload_adapter_weights(
+    session,
+    base_url: str,
+    model,
+    adapter_config: dict,
+    expected_policy_version: int,
+    step_id: int = None,
+):
+    """Upload adapter weights to the inference server and verify version consistency."""
+    print(f"📤 Uploading adapter weights to server (step {step_id}, expecting version {expected_policy_version})...")
+    
+    try:
+        # Extract adapter weights from model
+        adapter_weights = dict(tree_flatten(model.trainable_parameters()))
+        
+        # Create temporary directory for adapter files
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # Save adapter weights to temporary file
+            weights_path = temp_path / "adapters.safetensors"
+            mx.save_safetensors(str(weights_path), adapter_weights)
+            
+            # Save adapter config to temporary file
+            config_path = temp_path / "adapter_config.json"
+            with open(config_path, "w") as f:
+                json.dump(adapter_config, f, indent=2)
+            
+            # Prepare files for upload
+            with open(weights_path, "rb") as weights_file:
+                weights_data = weights_file.read()
+            with open(config_path, "rb") as config_file:
+                config_data = config_file.read()
+            
+            # Create multipart form data
+            form_data = aiohttp.FormData()
+            form_data.add_field('adapter_weights', weights_data,
+                              filename='adapters.safetensors',
+                              content_type='application/octet-stream')
+            form_data.add_field('adapter_config', config_data,
+                              filename='adapter_config.json',
+                              content_type='application/json')
+            
+            # Upload to server
+            async with session.post(f"{base_url}/upload_adapter", data=form_data) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    server_policy_version = result.get('policy_version')
+                    
+                    # Assert versions match
+                    if server_policy_version != expected_policy_version:
+                        print(f"⚠️ WARNING: Policy version mismatch! Expected {expected_policy_version}, got {server_policy_version}")
+                        print(f"   This may cause inconsistent behavior. Check server state.")
+                    else:
+                        print(f"✅ Adapter uploaded successfully! Policy version confirmed: {server_policy_version}")
+                    
+                    return server_policy_version
+                else:
+                    error = await resp.text()
+                    print(f"❌ Failed to upload adapter: {error}")
+                    raise RuntimeError(f"Adapter upload failed with status {resp.status}")
+                    
+    except Exception as e:
+        print(f"❌ Error uploading adapter weights: {e}")
+        raise
+
+
 def generate_grpo(
     model: nn.Module,
     tokenizer,
@@ -136,83 +299,110 @@ def generate_grpo(
     group_size: int,
     temperature: float,
     batch_size: int,
-    end_token: str = "</answer>"
+    end_token: str = "</answer>",
+    inference_server_url: str = "http://10.0.0.180:8000",
+    step_id: Optional[int] = None
 ):
     model.eval()
     all_completions = []
     all_completion_texts = []
+    all_logprobs = []
     batch_indices = []
 
     total_samples = len(prompt_tokens)
+    print(f"\n🚀 Starting GRPO generation for {total_samples} prompts with group_size={group_size}")
+    print(f"   Server: {inference_server_url}")
+    print(f"   Max tokens per generation: {max_tokens}")
+    print(f"   Total requests to make: {total_samples * group_size}")
 
-    for i in range(0, total_samples, batch_size):
-        current_batch_size = min(batch_size, total_samples - i)
-        batch_prompts = prompt_tokens[i : i + current_batch_size]
-
-        for j, prompt in enumerate(batch_prompts):
-            for k in range(group_size):
-                prompt_text = tokenizer.decode(prompt)
-                sampler = make_safe_sampler(
-                    tokenizer,
-                    temperature,
-                    top_p=1.0,
-                    min_p=0.0,
-                    min_tokens_to_keep=1,
-                    top_k=0,
-                    xtc_probability=0.0,
-                    xtc_threshold=0.0,
-                    xtc_special_tokens=tokenizer.encode("\n") + list(tokenizer.eos_token_ids),
+    async def run_async_generation():
+        async with aiohttp.ClientSession() as session:
+            nonlocal all_completions, all_completion_texts, batch_indices
+            
+            for i in range(0, total_samples, batch_size):
+                current_batch_size = min(batch_size, total_samples - i)
+                batch_prompts = prompt_tokens[i : i + current_batch_size]
+                
+                print(f"\n📦 Processing batch {i//batch_size + 1}: prompts {i} to {i + current_batch_size - 1}")
+                
+                # Collect all prompts for this batch
+                batch_requests = []
+                for j, prompt in enumerate(batch_prompts):
+                    for k in range(group_size):
+                        prompt_text = tokenizer.decode(prompt)
+                        batch_requests.append((prompt_text, i + j))
+                
+                # Extract prompts and indices
+                prompts_to_send = [req[0] for req in batch_requests]
+                prompt_indices = [req[1] for req in batch_requests]
+                
+                print(f"   Batch contains {len(prompts_to_send)} total requests ({current_batch_size} prompts × {group_size} group_size)")
+                
+                # Send batch to inference server - ALL IN PARALLEL!
+                results = await generate_async_batch(
+                    session=session,
+                    base_url=inference_server_url,
+                    prompts=prompts_to_send,
+                    tokenizer=tokenizer,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    step_id=step_id,
                 )
                 
-                prompt_cache = cache.make_prompt_cache(model)
-                try:
-                    completion: str | List[int] = generate(
-                        model=model,
-                        tokenizer=tokenizer,
-                        prompt=prompt_text,
-                        max_tokens=max_tokens,
-                        verbose=False,
-                        sampler=sampler,
-                        prompt_cache=prompt_cache,
-                    )
-                except IndexError as e:
-                    # Handle out-of-bounds token generation
-                    print(f"⚠️ Token index error during generation: {e}")
-                    print(f"Skipping this generation and using empty completion")
-                    completion = ""
-                    completion_ids = []
-                    all_completions.append(mx.array([]))
-                    all_completion_texts.append("")
-                    batch_indices.append(i + j)
-                    continue
-                except Exception as e:
-                    # Handle any other generation errors
-                    print(f"⚠️ Generation error: {e}")
-                    print(f"Using empty completion")
-                    completion = ""
-                    completion_ids = []
-                    all_completions.append(mx.array([]))
-                    all_completion_texts.append("")
-                    batch_indices.append(i + j)
-                    continue
+                # Process results
+                successful_results = 0
+                token_counts = []
+                for result, prompt_idx in zip(results, prompt_indices):
+                    try:
+                        completion_ids = result.get("completion_ids", [])
+                        completion_text = result.get("text", "")
+                        logprobs = result.get("logprobs", [])
+                        
+                        if completion_ids:
+                            successful_results += 1
+                            token_counts.append(len(completion_ids))
+                        
+                        if end_token and completion_text:
+                            # Remove end token if present
+                            end_sequence = tokenizer.encode(end_token)
+                            if len(completion_ids) >= len(end_sequence) and completion_ids[-len(end_sequence):] == end_sequence:
+                                completion_ids = completion_ids[:-len(end_sequence)]
+
+                                # also remove the logprobs for the end token
+                                logprobs = logprobs[:-len(end_sequence)]
+
+                                
+                        
+                        completion_ids = mx.array(completion_ids)
+                        all_completions.append(mx.stop_gradient(completion_ids))
+                        all_completion_texts.append(completion_text)
+                        all_logprobs.append(mx.array(logprobs))
+                        batch_indices.append(prompt_idx)
+                        
+                    except Exception as e:
+                        print(f"⚠️ Error processing result: {e}")
+                        # Handle error by adding empty completion
+                        all_completions.append(mx.array([]))
+                        all_completion_texts.append("")
+                        all_logprobs.append(mx.array([]))
+                        batch_indices.append(prompt_idx)
                 
-                if isinstance(completion, str):
-                    completion_ids = tokenizer.encode(completion)
+                if token_counts:
+                    avg_tokens = sum(token_counts) / len(token_counts)
+                    min_tokens = min(token_counts)
+                    max_tokens_generated = max(token_counts)
+                    print(f"   ✅ Batch processed: {successful_results}/{len(results)} successful")
+                    print(f"      Token stats: min={min_tokens}, max={max_tokens_generated}, avg={avg_tokens:.1f}")
                 else:
-                    completion_ids = completion
-
-                if end_token:
-                    end_sequence = tokenizer.encode(end_token)
-                    if len(completion_ids) >= len(end_sequence) and completion_ids[-len(end_sequence):] == end_sequence:
-                        completion_ids = completion_ids[:-len(end_sequence)]
-
-                completion_ids = mx.array(completion_ids)
-                all_completions.append(mx.stop_gradient(completion_ids))
-                all_completion_texts.append(completion)
-                batch_indices.append(i + j)
-
+                    print(f"   ✅ Batch processed: {successful_results}/{len(results)} successful completions")
+    
+    # Run async generation
+    asyncio.run(run_async_generation())
+    
+    print(f"\n🎉 GRPO generation complete! Generated {len(all_completions)} completions total")
+    
     mx.clear_cache()
-    return all_completions, all_completion_texts, batch_indices
+    return all_completions, all_completion_texts, all_logprobs, batch_indices
 
 
 def grpo_loss(
@@ -222,6 +412,7 @@ def grpo_loss(
     batch,
     completions=None,
     completion_texts=None,
+    completion_logprobs=None,
     batch_indices=None,
     reward_funcs: Optional[List[RewardFunctions]] = None,
     beta: float = 0.1,
@@ -244,9 +435,10 @@ def grpo_loss(
     ):
         all_completions = completions
         all_completion_texts = completion_texts
+        all_logprobs = completion_logprobs if completion_logprobs is not None else []
         batch_indices = batch_indices
     else:
-        all_completions, all_completion_texts, batch_indices = generate_grpo(
+        all_completions, all_completion_texts, all_logprobs, batch_indices = generate_grpo(
             model=model,
             tokenizer=tokenizer,
             prompt_tokens=prompt_tokens,
@@ -310,12 +502,50 @@ def grpo_loss(
     attention_mask = mx.stack(attention_masks)
     lengths = attention_mask.sum(axis=1)
 
-    token_log_probs = get_per_token_logps(model, inputs, lengths)
-    mx.eval(token_log_probs)
+    # old way:
+    # token_log_probs = get_per_token_logps(model, inputs, lengths)
+    # mx.eval(token_log_probs)
+
+    # if ref_model is None:
+    #     ref_token_log_probs = token_log_probs
+    # else:
+    #     ref_token_log_probs = get_per_token_logps(ref_model, inputs, lengths)
+    #     mx.eval(ref_token_log_probs)
+
+    # max_len = max(x.shape[0] for x in token_log_probs)
+    # padded_log_probs = []
+    # padded_ref_log_probs = []
+
+    # for i in range(len(token_log_probs)):
+    #     seq_len = token_log_probs[i].shape[0]
+    #     padding = mx.zeros((max_len - seq_len,))
+
+    #     padded_log_probs.append(mx.concatenate([token_log_probs[i], padding]))
+    #     padded_ref_log_probs.append(mx.concatenate([ref_token_log_probs[i], padding]))
+
+    # old_token_log_probs = mx.stack(padded_log_probs)
+    # old_ref_token_log_probs = mx.stack(padded_ref_log_probs)
+
+    # new way:
+
+    # Use logprobs from server if available, otherwise compute them
+    if all_logprobs and len(all_logprobs) > 0 and all(lp is not None and lp.size > 0 for lp in all_logprobs):
+        # Server provided logprobs - pad them to match completion padding
+        print(f"   Using server-provided logprobs for {len(all_logprobs)} completions")
+        
+        # remove the last logprob for each sequence
+        token_log_probs = [lp[:-1] for lp in all_logprobs]
+    else:
+        # Fallback to computing logprobs locally
+        print(f"   Computing logprobs locally (server didn't provide them)")
+        token_log_probs = get_per_token_logps(model, inputs, lengths)
+        mx.eval(token_log_probs)
+
 
     if ref_model is None:
         ref_token_log_probs = token_log_probs
     else:
+        # For reference model, we always need to compute locally using the padded inputs
         ref_token_log_probs = get_per_token_logps(ref_model, inputs, lengths)
         mx.eval(ref_token_log_probs)
 
@@ -332,6 +562,11 @@ def grpo_loss(
 
     token_log_probs = mx.stack(padded_log_probs)
     ref_token_log_probs = mx.stack(padded_ref_log_probs)
+    
+
+    # At this point:
+    # - token_log_probs is already a 2D padded tensor (from server or local computation)
+    # - ref_token_log_probs is also a 2D padded tensor
 
     all_func_rewards = []
     for reward_func in reward_funcs:
@@ -682,11 +917,55 @@ def train_grpo(
         grad_checkpoint(model.layers[0])
 
     state = [model.state, optimizer.state]
+    
+    # Initialize policy version tracking - always start at 1
+    current_policy_version = 1
+    
+    # Prepare adapter config and upload initial weights if enabled
+    adapter_config = None
+    if args.upload_adapters_to_server:
+        adapter_config = {
+            "model_type": model.model_type if hasattr(model, 'model_type') else "unknown",
+            "num_layers": len(model.layers) if hasattr(model, 'layers') else 0,
+            "lora_parameters": {
+                "rank": getattr(args, 'lora_rank', 16),
+                "dropout": getattr(args, 'lora_dropout', 0.0),
+                "scale": getattr(args, 'lora_scale', 10.0),
+            },
+            "fine_tune_type": "lora",
+            "target_modules": getattr(args, 'lora_target_modules', ["self_attn.q_proj", "self_attn.v_proj"]),
+            "trainable": True
+        }
+        print(f"📡 Adapter uploads enabled to server: {args.inference_server_url}")
+        
+        # Upload initial adapter weights before training starts
+        print(f"\n🚀 Uploading initial adapter weights to server...")
+        
+        async def upload_initial_adapters():
+            async with aiohttp.ClientSession() as session:
+                server_version = await upload_adapter_weights(
+                    session=session,
+                    base_url=args.inference_server_url,
+                    model=model,
+                    adapter_config=adapter_config,
+                    expected_policy_version=current_policy_version,
+                    step_id=0,
+                )
+                if server_version != current_policy_version:
+                    raise RuntimeError(
+                        f"Initial policy version mismatch! Expected {current_policy_version}, "
+                        f"but server returned {server_version}. Please restart the server or check configuration."
+                    )
+        
+        # Run the initial upload
+        asyncio.run(upload_initial_adapters())
+        print(f"✅ Initial weights uploaded. Starting training with policy version {current_policy_version}\n")
 
     def step(batch):
+        nonlocal current_policy_version
         prompt_tokens, targets, prompt_lens, target_lens, type_info = batch
 
-        all_completions, all_completion_texts, batch_indices = generate_grpo(
+        all_completions, all_completion_texts, all_logprobs, batch_indices = generate_grpo(
             model=model,
             tokenizer=tokenizer,
             prompt_tokens=prompt_tokens,
@@ -694,6 +973,8 @@ def train_grpo(
             group_size=args.group_size,
             temperature=args.temperature,
             batch_size=args.batch_size,
+            inference_server_url=args.inference_server_url,
+            step_id=it,  # Pass current iteration as step_id
         )
 
         mx.clear_cache()
@@ -704,6 +985,7 @@ def train_grpo(
             batch=(prompt_tokens, targets, prompt_lens, target_lens, type_info),
             completions=all_completions,
             completion_texts=all_completion_texts,
+            completion_logprobs=all_logprobs,
             batch_indices=batch_indices,
             reward_funcs=reward_funcs,
             beta=args.beta,
@@ -719,6 +1001,31 @@ def train_grpo(
         if (it + 1) % args.gradient_accumulation_steps == 0:
             grad = average_gradients(grad)
             optimizer.update(model, grad)
+            
+            # Increment policy version after optimizer update and upload if enabled
+            if args.upload_adapters_to_server and adapter_config:
+                # Increment local policy version since we've updated the model
+                current_policy_version += 1
+                print(f"\n🔄 Model updated locally, incrementing to policy version {current_policy_version}")
+                print(f"   Uploading updated weights to inference server (iteration {it + 1})...")
+                
+                async def upload_adapters():
+                    nonlocal current_policy_version
+                    async with aiohttp.ClientSession() as session:
+                        server_version = await upload_adapter_weights(
+                            session=session,
+                            base_url=args.inference_server_url,
+                            model=model,
+                            adapter_config=adapter_config,
+                            expected_policy_version=current_policy_version,
+                            step_id=it + 1,
+                        )
+                        if server_version != current_policy_version:
+                            print(f"⚠️ WARNING: Server returned version {server_version}, expected {current_policy_version}")
+                            print(f"   Continuing with local version {current_policy_version}")
+                
+                # Run the async upload
+                asyncio.run(upload_adapters())
 
         return (lvalue / args.gradient_accumulation_steps), toks, metrics
 
