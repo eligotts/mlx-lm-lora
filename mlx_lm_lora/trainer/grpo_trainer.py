@@ -8,6 +8,9 @@ import aiohttp
 import json
 import tempfile
 import shutil
+import threading
+import queue
+from collections import deque
 
 from mlx.utils import tree_flatten
 import mlx.core as mx
@@ -127,6 +130,293 @@ class GRPOTrainingArgs(SFTTrainingArgs):
         },
     )
 
+    # Async trainer specific knobs
+    prefetch_windows: int = field(
+        default=2,
+        metadata={
+            "help": "Number of grad-accumulation windows to keep prefetched. 2 means current window plus one 'step off'."
+        },
+    )
+
+
+@dataclass
+class PrefetchedRollout:
+    step_id: int
+    batch: tuple
+    completions: List[mx.array]
+    completion_texts: List[str]
+    logprobs: List[mx.array]
+    batch_indices: List[int]
+    generation_policy_version: int
+
+
+async def _prepare_rollout_for_step(
+    session,
+    base_url: str,
+    tokenizer,
+    batch: tuple,
+    group_size: int,
+    max_tokens: int,
+    temperature: float,
+    step_id: int,
+    end_token: str = "</answer>",
+    started_event: Optional[asyncio.Event] = None,
+) -> PrefetchedRollout:
+    prompts_tokens, _answers_tokens, prompts_text, answers_text, type_info = batch
+
+    # Build requests: duplicate each prompt by group_size
+    requests = []
+    prompt_indices = []
+    for i, prompt_text in enumerate(prompts_text):
+        for _ in range(group_size):
+            requests.append(prompt_text)
+            prompt_indices.append(i)
+
+    print(f"[TRN][PREFETCH] scheduling step {step_id}: prompts={len(prompts_text)}×group={group_size}")
+    results = await generate_async_batch(
+        session=session,
+        base_url=base_url,
+        prompts=requests,
+        tokenizer=tokenizer,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        step_id=step_id,
+        started_event=started_event,
+    )
+
+    all_completions: List[mx.array] = []
+    all_completion_texts: List[str] = []
+    all_logprobs: List[mx.array] = []
+    batch_indices: List[int] = []
+
+    # Capture policy version from server responses
+    policy_versions = []
+
+    for i, (result, pidx) in enumerate(zip(results, prompt_indices)):
+        completion_ids = result.get("completion_ids", [])
+        completion_text = result.get("text", "")
+        logprobs = result.get("logprobs", [])
+        policy_version = result.get("policy_version", None)
+        if policy_version is not None:
+            policy_versions.append(policy_version)
+
+        if end_token and completion_text:
+            end_sequence = tokenizer.encode(end_token)
+            if (
+                len(completion_ids) >= len(end_sequence)
+                and completion_ids[-len(end_sequence):] == end_sequence
+            ):
+                completion_ids = completion_ids[:-len(end_sequence)]
+                if isinstance(logprobs, list) and len(logprobs) >= len(end_sequence):
+                    logprobs = logprobs[:-len(end_sequence)]
+
+        all_completions.append(mx.stop_gradient(mx.array(completion_ids)))
+        all_completion_texts.append(completion_text)
+        all_logprobs.append(mx.array(logprobs) if isinstance(logprobs, list) else mx.array([]))
+        batch_indices.append(pidx)
+
+    generation_policy_version = policy_versions[0] if policy_versions else -1
+    if policy_versions and any(pv != generation_policy_version for pv in policy_versions):
+        print(f"[TRN][PREFETCH] ⚠️ mixed policy versions step={step_id}: {policy_versions}")
+    print(f"[TRN][PREFETCH] step {step_id} ready: responses={len(results)} policy_v={generation_policy_version}")
+
+    return PrefetchedRollout(
+        step_id=step_id,
+        batch=batch,
+        completions=all_completions,
+        completion_texts=all_completion_texts,
+        logprobs=all_logprobs,
+        batch_indices=batch_indices,
+        generation_policy_version=generation_policy_version,
+    )
+
+
+class AsyncRolloutManager:
+    """Asynchronous rollout prefetcher that keeps up to N windows (current + one-off) scheduled.
+
+    Windows are defined by grad_accumulation_steps. For policy version p (1-indexed),
+    its window is steps [ (p-1)*grad_steps + 1, p*grad_steps ].
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        tokenizer,
+        iterate_batches: callable,
+        dataset,
+        batch_size: int,
+        max_seq_length: int,
+        group_size: int,
+        max_tokens: int,
+        temperature: float,
+        grad_steps: int,
+        prefetch_windows: int = 2,
+        max_inflight_steps: Optional[int] = None,
+    ):
+        self.base_url = base_url
+        self.tokenizer = tokenizer
+        self.iterate_batches = iterate_batches
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.max_seq_length = max_seq_length
+        self.group_size = group_size
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.grad_steps = grad_steps
+        self.prefetch_windows = max(1, prefetch_windows)
+        self.max_inflight_steps = max_inflight_steps or (self.grad_steps * self.prefetch_windows)
+
+        # Shared state
+        self._train_policy_version = 1
+        self._inference_policy_version = 1
+        self._allowed_max_step_id = self.grad_steps * self.prefetch_windows
+
+        self._out_queue: "queue.Queue[PrefetchedRollout]" = queue.Queue()
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+        # Async loop specific
+        self._loop = None
+        self._session = None
+        self._inflight: dict[int, asyncio.Task] = {}
+        self._next_step_id_to_schedule = 1
+        self._batch_iter = None
+
+        # Ordered consumption state
+        self._pending: dict[int, PrefetchedRollout] = {}
+        self._next_step_to_consume: int = 1
+        self._consume_cv = threading.Condition()
+
+    def start(self):
+        if self._thread is not None:
+            return
+        print(f"[TRN][RM] starting rollout manager with grad_steps={self.grad_steps} prefetch_windows={self.prefetch_windows}")
+        self._thread = threading.Thread(target=self._run_loop, name="AsyncRolloutManager", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        print("[TRN][RM] stopping rollout manager ...")
+        if self._loop:
+            def _stop():
+                for task in list(self._inflight.values()):
+                    task.cancel()
+            asyncio.run_coroutine_threadsafe(self._async_call(_stop), self._loop)
+        if self._thread:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        print("[TRN][RM] stopped")
+
+    def next_rollout(self) -> PrefetchedRollout:
+        with self._consume_cv:
+            while True:
+                # If the next needed step is ready, deliver it
+                if self._next_step_to_consume in self._pending:
+                    rollout = self._pending.pop(self._next_step_to_consume)
+                    print(f"[TRN][RM] → delivering rollout step={rollout.step_id} gen_policy_v={rollout.generation_policy_version}")
+                    self._next_step_to_consume += 1
+                    return rollout
+
+                # If stopping and nothing left, raise
+                if self._stop_event.is_set() and not self._inflight:
+                    raise RuntimeError("Rollout manager stopped and no pending rollouts available")
+
+                # Wait for more completions
+                self._consume_cv.wait(timeout=0.1)
+
+    def set_train_policy_version(self, version: int):
+        self._train_policy_version = max(1, version)
+        self._recompute_allowed()
+
+    def set_inference_policy_version(self, version: int):
+        self._inference_policy_version = max(1, version)
+        self._recompute_allowed()
+
+    def notify_synced(self, version: int):
+        self.set_train_policy_version(version)
+        self.set_inference_policy_version(version)
+        print(f"[TRN][RM] notify_synced policy_v={version}")
+
+    def _recompute_allowed(self):
+        # Allow scheduling up to current + (prefetch_windows-1) windows
+        max_window = self._train_policy_version + (self.prefetch_windows - 1)
+        self._allowed_max_step_id = max_window * self.grad_steps
+        print(f"[TRN][RM] allowed_max_step_id={self._allowed_max_step_id} (train_v={self._train_policy_version}, prefetch_windows={self.prefetch_windows})")
+
+    async def _async_call(self, fn):
+        return fn()
+
+    def _run_loop(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._main())
+
+    async def _main(self):
+        self._session = aiohttp.ClientSession()
+        # Own the batch iterator so training only consumes prefetched batches
+        self._batch_iter = self.iterate_batches(
+            dataset=self.dataset,
+            batch_size=self.batch_size,
+            max_seq_length=self.max_seq_length,
+            train=True,
+        )
+        try:
+            while not self._stop_event.is_set():
+                # Schedule new steps if within limits
+                while (
+                    len(self._inflight) < self.max_inflight_steps
+                    and self._next_step_id_to_schedule <= self._allowed_max_step_id
+                ):
+                    try:
+                        batch = next(self._batch_iter)
+                    except StopIteration:
+                        self._stop_event.set()
+                        break
+                    step_id = self._next_step_id_to_schedule
+                    print(f"[TRN][RM] scheduling step_id={step_id} inflight={len(self._inflight)}/{self.max_inflight_steps}")
+                    started_event = asyncio.Event()
+                    task = self._loop.create_task(
+                        _prepare_rollout_for_step(
+                            session=self._session,
+                            base_url=self.base_url,
+                            tokenizer=self.tokenizer,
+                            batch=batch,
+                            group_size=self.group_size,
+                            max_tokens=self.max_tokens,
+                            temperature=self.temperature,
+                            step_id=step_id,
+                            started_event=started_event,
+                        )
+                    )
+                    task.add_done_callback(lambda t, sid=step_id: self._on_done(t, sid))
+                    self._inflight[step_id] = task
+                    self._next_step_id_to_schedule += 1
+
+                    # Enforce serial dispatch across steps: wait until this step's requests
+                    # have been scheduled before moving to the next step. This does not block on results.
+                    try:
+                        await asyncio.wait_for(started_event.wait(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        print(f"[TRN][RM] ⚠️ timeout waiting for step {step_id} to start dispatching requests")
+
+                # Process completions (callbacks will push to queue)
+                await asyncio.sleep(0.005)
+        finally:
+            await self._session.close()
+
+    def _on_done(self, task: asyncio.Task, step_id: int):
+        try:
+            rollout: PrefetchedRollout = task.result()
+            with self._consume_cv:
+                self._pending[step_id] = rollout
+                self._consume_cv.notify_all()
+            print(f"[TRN][RM] ✓ finished step_id={step_id}; pending_keys={sorted(self._pending.keys())}")
+        except Exception as e:
+            print(f"❌ Rollout step {step_id} failed: {e}")
+        finally:
+            self._inflight.pop(step_id, None)
+
 
 def get_per_token_logps(model: nn.Module, inputs, lengths):
     logits = model(inputs).astype(mx.float16)
@@ -156,6 +446,7 @@ async def send_single_request(
     step_id: Optional[int] = None,
 ):
     """Send a single request to the inference server."""
+    t0 = time.perf_counter()
     # Format prompt for chat template
     prompt_fm = [{"role": "user", "content": prompt}]
     prompt_fm = tokenizer.apply_chat_template(prompt_fm, add_generation_prompt=True, tokenize=False)
@@ -170,16 +461,20 @@ async def send_single_request(
     }
     
     try:
+        print(f"[TRN][REQ] POST /generate step_id={step_id} req_id={request_id} ...")
         async with session.post(f"{base_url}/generate", json=payload) as resp:
+            status = resp.status
             result = await resp.json()
             completion_text = result.get('text', '')
             # Truncate text for display if it's too long
             display_text = completion_text[:100] + "..." if len(completion_text) > 100 else completion_text
             display_text = display_text.replace('\n', ' ')  # Replace newlines for cleaner display
-            print(f"✓ Received {request_id}: {len(result.get('completion_ids', []))} tokens | Text: '{display_text}'")
+            dt = (time.perf_counter() - t0) * 1000
+            print(f"[TRN][REQ] ✓ resp {status} req_id={request_id} step_id={step_id} tokens={len(result.get('completion_ids', []))} t_ms={dt:.1f} | '{display_text}'")
             return result
     except Exception as e:
-        print(f"⚠️ Error calling inference server for {request_id}: {e}")
+        dt = (time.perf_counter() - t0) * 1000
+        print(f"[TRN][REQ] ⚠️ error req_id={request_id} step_id={step_id} after {dt:.1f}ms: {e}")
         # Return empty result on error
         return {
             "completion_ids": [],
@@ -196,31 +491,57 @@ async def generate_async_batch(
     max_tokens: int,
     temperature: float,
     step_id: Optional[int] = None,
+    started_event: Optional[asyncio.Event] = None,
 ):
-    """Send batch requests to inference server in parallel and collect responses."""
-    print(f"\n📤 Sending batch of {len(prompts)} prompts to inference server...")
-    
-    # Create all requests as coroutines
-    tasks = []
-    for idx, prompt in enumerate(prompts):
-        request_id = f"grpo-{idx}-{step_id or 0}"
-        task = send_single_request(
-            session=session,
-            base_url=base_url,
-            prompt=prompt,
-            tokenizer=tokenizer,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            request_id=request_id,
-            step_id=step_id,
+    """Send one multi-prompt request for the whole step to enforce serial arrival across steps."""
+    print(f"\n[TRN][ASYNC] 📤 sending {len(prompts)} prompts as one request step_id={step_id}")
+
+    # Format prompts for chat template
+    formatted_prompts: List[str] = []
+    for p in prompts:
+        prompt_fm = [{"role": "user", "content": p}]
+        formatted_prompts.append(
+            tokenizer.apply_chat_template(prompt_fm, add_generation_prompt=True, tokenize=False)
         )
-        tasks.append(task)
-    
-    # Execute all requests in parallel
-    print(f"⏳ Waiting for all {len(tasks)} requests to complete...")
-    results = await asyncio.gather(*tasks)
-    print(f"✅ Batch complete! Received {len(results)} responses\n")
-    
+
+    payload = {
+        "prompt": formatted_prompts,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "logprobs": 1,
+        "step_id": step_id or 100,
+        "request_id": f"grpo-step-{step_id or 0}",
+    }
+
+    async def _post_and_wait():
+        t0 = time.perf_counter()
+        try:
+            async with session.post(f"{base_url}/generate", json=payload) as resp:
+                status = resp.status
+                data = await resp.json()
+                dt = (time.perf_counter() - t0) * 1000
+                if isinstance(data, dict) and "results" in data:
+                    res = data["results"]
+                else:
+                    res = [data]
+                print(f"[TRN][ASYNC] ✅ step {step_id} completed; resp={status} results={len(res)} t_ms={dt:.1f}")
+                return res
+        except Exception as e:
+            print(f"[TRN][ASYNC] ❌ step {step_id} request failed: {e}")
+            return [
+                {"completion_ids": [], "text": "", "finish_reason": "error", "logprobs": []}
+                for _ in prompts
+            ]
+
+    # Fire request and immediately signal start to allow next step scheduling
+    post_task = asyncio.create_task(_post_and_wait())
+    if started_event is not None and not started_event.is_set():
+        try:
+            started_event.set()
+        except Exception:
+            pass
+
+    results = await post_task
     return results
 
 
@@ -300,7 +621,8 @@ def generate_grpo(
     temperature: float,
     batch_size: int,
     end_token: str = "</answer>",
-    inference_server_url: str = "http://10.0.0.180:8000",
+    # inference_server_url: str = "http://10.0.0.180:8000",
+    inference_server_url: str = "http://localhost:8000",
     step_id: Optional[int] = None
 ):
     model.eval()
@@ -310,10 +632,7 @@ def generate_grpo(
     batch_indices = []
 
     total_samples = len(prompt_tokens)
-    print(f"\n🚀 Starting GRPO generation for {total_samples} prompts with group_size={group_size}")
-    print(f"   Server: {inference_server_url}")
-    print(f"   Max tokens per generation: {max_tokens}")
-    print(f"   Total requests to make: {total_samples * group_size}")
+    print(f"\n[TRN][SYNC] starting GRPO generation total_prompts={total_samples} group_size={group_size} server={inference_server_url} max_tokens={max_tokens} total_reqs={total_samples * group_size} step_id={step_id}")
 
     async def run_async_generation():
         async with aiohttp.ClientSession() as session:
@@ -323,7 +642,7 @@ def generate_grpo(
                 current_batch_size = min(batch_size, total_samples - i)
                 batch_prompts = prompt_tokens[i : i + current_batch_size]
                 
-                print(f"\n📦 Processing batch {i//batch_size + 1}: prompts {i} to {i + current_batch_size - 1}")
+                print(f"[TRN][SYNC] batch {i//batch_size + 1}: prompts {i}-{i + current_batch_size - 1}")
                 
                 # Collect all prompts for this batch
                 batch_requests = []
@@ -336,7 +655,7 @@ def generate_grpo(
                 prompts_to_send = [req[0] for req in batch_requests]
                 prompt_indices = [req[1] for req in batch_requests]
                 
-                print(f"   Batch contains {len(prompts_to_send)} total requests ({current_batch_size} prompts × {group_size} group_size)")
+                print(f"[TRN][SYNC]   contains {len(prompts_to_send)} reqs ({current_batch_size}×{group_size})")
                 
                 # Send batch to inference server - ALL IN PARALLEL!
                 results = await generate_async_batch(
@@ -391,15 +710,14 @@ def generate_grpo(
                     avg_tokens = sum(token_counts) / len(token_counts)
                     min_tokens = min(token_counts)
                     max_tokens_generated = max(token_counts)
-                    print(f"   ✅ Batch processed: {successful_results}/{len(results)} successful")
-                    print(f"      Token stats: min={min_tokens}, max={max_tokens_generated}, avg={avg_tokens:.1f}")
+                    print(f"[TRN][SYNC]   ✓ batch processed {successful_results}/{len(results)}; tokens min={min_tokens} max={max_tokens_generated} avg={avg_tokens:.1f}")
                 else:
-                    print(f"   ✅ Batch processed: {successful_results}/{len(results)} successful completions")
+                    print(f"[TRN][SYNC]   ✓ batch processed {successful_results}/{len(results)} successful completions")
     
     # Run async generation
     asyncio.run(run_async_generation())
     
-    print(f"\n🎉 GRPO generation complete! Generated {len(all_completions)} completions total")
+    print(f"\n[TRN][SYNC] done GRPO generation completions={len(all_completions)}")
     
     mx.clear_cache()
     return all_completions, all_completion_texts, all_logprobs, batch_indices
@@ -936,10 +1254,10 @@ def train_grpo(
             "target_modules": getattr(args, 'lora_target_modules', ["self_attn.q_proj", "self_attn.v_proj"]),
             "trainable": True
         }
-        print(f"📡 Adapter uploads enabled to server: {args.inference_server_url}")
+        print(f"[TRN][INIT] adapter uploads enabled: {args.inference_server_url}")
         
         # Upload initial adapter weights before training starts
-        print(f"\n🚀 Uploading initial adapter weights to server...")
+        print(f"\n[TRN][INIT] uploading initial adapter weights to server ...")
         
         async def upload_initial_adapters():
             async with aiohttp.ClientSession() as session:
@@ -959,23 +1277,40 @@ def train_grpo(
         
         # Run the initial upload
         asyncio.run(upload_initial_adapters())
-        print(f"✅ Initial weights uploaded. Starting training with policy version {current_policy_version}\n")
+        print(f"[TRN][INIT] ✓ initial weights uploaded; starting training with policy_v={current_policy_version}\n")
 
-    def step(batch):
+    def step(batch, prefetch_rollout: Optional[PrefetchedRollout] = None):
         nonlocal current_policy_version
         prompt_tokens, targets, prompt_lens, target_lens, type_info = batch
 
-        all_completions, all_completion_texts, all_logprobs, batch_indices = generate_grpo(
-            model=model,
-            tokenizer=tokenizer,
-            prompt_tokens=prompt_tokens,
-            max_tokens=args.max_completion_length,
-            group_size=args.group_size,
-            temperature=args.temperature,
-            batch_size=args.batch_size,
-            inference_server_url=args.inference_server_url,
-            step_id=it,  # Pass current iteration as step_id
-        )
+        if prefetch_rollout is None:
+            # Synchronous fallback (should not happen in async mode)
+            print(f"[TRN][STEP] it={it} using SYNC generation (prefetch missing)")
+            all_completions, all_completion_texts, all_logprobs, batch_indices = generate_grpo(
+                model=model,
+                tokenizer=tokenizer,
+                prompt_tokens=prompt_tokens,
+                max_tokens=args.max_completion_length,
+                group_size=args.group_size,
+                temperature=args.temperature,
+                batch_size=args.batch_size,
+                inference_server_url=args.inference_server_url,
+                step_id=it,
+            )
+        else:
+            # Use prefetched results
+            # Version guard: ensure trainer policy is no more than one ahead
+            if (current_policy_version - prefetch_rollout.generation_policy_version) > 1:
+                raise RuntimeError(
+                    f"Prefetched rollout step {prefetch_rollout.step_id} generated with policy"
+                    f" v{prefetch_rollout.generation_policy_version} too stale for trainer v{current_policy_version}"
+                )
+            print(f"[TRN][STEP] it={it} using PREFETCH step={prefetch_rollout.step_id} gen_policy_v={prefetch_rollout.generation_policy_version} trainer_v={current_policy_version}")
+            # Also accept older or equal versions (<= trainer), as designed
+            all_completions = prefetch_rollout.completions
+            all_completion_texts = prefetch_rollout.completion_texts
+            all_logprobs = prefetch_rollout.logprobs
+            batch_indices = prefetch_rollout.batch_indices
 
         mx.clear_cache()
 
@@ -998,7 +1333,8 @@ def train_grpo(
             importance_sampling_level=args.importance_sampling_level,
         )
 
-        if (it + 1) % args.gradient_accumulation_steps == 0:
+        # Update exactly after processing 'gradient_accumulation_steps' steps
+        if it % args.gradient_accumulation_steps == 0:
             grad = average_gradients(grad)
             optimizer.update(model, grad)
             
@@ -1006,26 +1342,55 @@ def train_grpo(
             if args.upload_adapters_to_server and adapter_config:
                 # Increment local policy version since we've updated the model
                 current_policy_version += 1
-                print(f"\n🔄 Model updated locally, incrementing to policy version {current_policy_version}")
-                print(f"   Uploading updated weights to inference server (iteration {it + 1})...")
+                print(f"\n[TRN][UPD] it={it} (post-accum) updated locally → policy_v={current_policy_version}")
+                print(f"[TRN][UPD] uploading updated adapters to server ...")
                 
                 async def upload_adapters():
                     nonlocal current_policy_version
-                    async with aiohttp.ClientSession() as session:
-                        server_version = await upload_adapter_weights(
-                            session=session,
-                            base_url=args.inference_server_url,
-                            model=model,
-                            adapter_config=adapter_config,
-                            expected_policy_version=current_policy_version,
-                            step_id=it + 1,
-                        )
-                        if server_version != current_policy_version:
-                            print(f"⚠️ WARNING: Server returned version {server_version}, expected {current_policy_version}")
-                            print(f"   Continuing with local version {current_policy_version}")
+                    max_retries = 5
+                    backoff = 5.0
+                    attempt = 0
+                    last_exc = None
+                    while attempt < max_retries:
+                        attempt += 1
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                server_version = await upload_adapter_weights(
+                                    session=session,
+                                    base_url=args.inference_server_url,
+                                    model=model,
+                                    adapter_config=adapter_config,
+                                    expected_policy_version=current_policy_version,
+                                    step_id=it,
+                                )
+                            if server_version != current_policy_version:
+                                print(f"[TRN][UPD] ⚠️ server version {server_version} != expected {current_policy_version}")
+                            print(f"[TRN][UPD] ✓ server policy_v={server_version} after attempt {attempt}")
+                            return server_version
+                        except Exception as e:
+                            last_exc = e
+                            if attempt < max_retries:
+                                print(f"[TRN][UPD] retry {attempt}/{max_retries} after error: {e}. sleeping {backoff:.1f}s ...")
+                                await asyncio.sleep(backoff)
+                                backoff *= 1.5
+                            else:
+                                print(f"[TRN][UPD] ❌ upload failed after {attempt} attempts: {e}")
+                                raise
+                        # Inform rollout manager that train and inference are now at current_policy_version
+                        try:
+                            rollout_manager.notify_synced(current_policy_version)
+                        except Exception:
+                            pass
                 
-                # Run the async upload
-                asyncio.run(upload_adapters())
+                # Run the async upload and then notify rollout manager to open next window
+                try:
+                    server_version = asyncio.run(upload_adapters())
+                except Exception:
+                    server_version = None
+                try:
+                    rollout_manager.notify_synced(current_policy_version)
+                except Exception:
+                    pass
 
         return (lvalue / args.gradient_accumulation_steps), toks, metrics
 
@@ -1054,13 +1419,29 @@ def train_grpo(
 
     start = time.perf_counter()
     pbar = tqdm(range(1, args.iters + 1), desc="Training", disable=rank != 0)
+    # Initialize async rollout manager
+    rollout_manager = AsyncRolloutManager(
+        base_url=args.inference_server_url,
+        tokenizer=tokenizer,
+        iterate_batches=iterate_batches,
+        dataset=train_dataset,
+        batch_size=args.batch_size,
+        max_seq_length=args.max_seq_length,
+        group_size=args.group_size,
+        max_tokens=args.max_completion_length,
+        temperature=args.temperature,
+        grad_steps=args.gradient_accumulation_steps,
+        prefetch_windows=args.prefetch_windows,
+    )
+    rollout_manager.start()
+    rollout_manager.notify_synced(current_policy_version)
+
     for it in pbar:
-        batch = next(iterate_batches(
-            dataset=train_dataset,
-            batch_size=args.batch_size,
-            max_seq_length=args.max_seq_length,
-            train=True,
-        ))
+        # Consume next prefetched rollout
+        print(f"[TRN][LOOP] waiting for prefetched rollout it={it} ...")
+        prefetched = rollout_manager.next_rollout()
+        print(f"[TRN][LOOP] got prefetched rollout step={prefetched.step_id} gen_policy_v={prefetched.generation_policy_version}")
+        batch = prefetched.batch
 
         if it == 1 or it % args.steps_per_eval == 0 or it == args.iters:
             stop = time.perf_counter()
@@ -1101,7 +1482,7 @@ def train_grpo(
 
             start = time.perf_counter()
 
-        lvalue, toks, metrics = step(batch)
+        lvalue, toks, metrics = step(batch, prefetch_rollout=prefetched)
         losses += lvalue
         n_tokens += toks
         steps += 1
@@ -1181,3 +1562,4 @@ def train_grpo(
     adapter_weights = dict(tree_flatten(model.trainable_parameters()))
     mx.save_safetensors(str(args.adapter_file), adapter_weights)
     tqdm.write(f"Saved final weights to {args.adapter_file}.")
+    rollout_manager.stop()
