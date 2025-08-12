@@ -393,11 +393,11 @@ train_grpo(
         group_size=5,
         epsilon=1e-4,
         epsilon_high=None,
-        max_completion_length=512,
+        max_completion_length=1024,
         reward_weights=custom_reward_weights,  # Use this instead of reward_scaling
         # Uncomment these lines to enable inference server integration:
-        # upload_adapters_to_server=True,
-        # inference_server_url="http://10.0.0.180:8000",
+        upload_adapters_to_server=True,
+        inference_server_url="http://localhost:8000",
     ),
     reward_funcs=custom_reward_functions,  # Pass the custom reward functions
     training_callback=wandb_callback  # Pass the WandB callback here
