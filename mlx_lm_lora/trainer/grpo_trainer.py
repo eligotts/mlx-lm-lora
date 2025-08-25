@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 from pathlib import Path
 from tqdm import tqdm
 import time
@@ -8,6 +8,8 @@ import aiohttp
 import json
 import tempfile
 import shutil
+import threading
+import concurrent.futures
 
 from mlx.utils import tree_flatten
 import mlx.core as mx
@@ -19,7 +21,7 @@ from mlx_lm.tuner.callbacks import TrainingCallback
 from .sft_trainer import SFTTrainingArgs, average_gradients, grad_checkpoint
 
 from mlx_lm.models import cache
-from mlx_lm.generate import generate, make_sampler
+from mlx_lm.generate import make_sampler
 from .grpo_reward_functions import (
     RewardFunctions,
     r1_accuracy_reward_func,
@@ -126,6 +128,12 @@ class GRPOTrainingArgs(SFTTrainingArgs):
             "help": "Whether to upload adapter weights to the inference server after each update."
         },
     )
+    enable_one_step_off: bool = field(
+        default=True,
+        metadata={
+            "help": "Enable pipelined 'one step off' rollout scheduling (serial by batch; async within batch)."
+        },
+    )
 
 
 def get_per_token_logps(model: nn.Module, inputs, lengths):
@@ -144,6 +152,221 @@ def get_per_token_logps(model: nn.Module, inputs, lengths):
         per_token_logps.append(token_log_probs)
     mx.eval(logits)
     return per_token_logps
+
+
+class _AsyncLoopWorker:
+    """Run an asyncio event loop in a background thread and allow submitting coroutines.
+
+    This lets the trainer schedule HTTP requests without blocking the main thread,
+    while still awaiting results later.
+    """
+
+    def __init__(self):
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._started = threading.Event()
+        self._thread.start()
+        self._started.wait()
+
+    def _run(self):
+        asyncio.set_event_loop(self._loop)
+        self._started.set()
+        self._loop.run_forever()
+
+    def submit(self, coro: asyncio.coroutines) -> concurrent.futures.Future:
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    def call_soon_threadsafe(self, func, *args, **kwargs):
+        self._loop.call_soon_threadsafe(func, *args, **kwargs)
+
+    def stop(self):
+        def _stop():
+            self._loop.stop()
+        self._loop.call_soon_threadsafe(_stop)
+        self._thread.join(timeout=5)
+
+
+class OneStepOffScheduler:
+    """Serial-by-batch, async-within-batch rollout scheduler with a one-update-ahead window.
+
+    - Maintains step/batch ordering guarantees required by the user
+    - Uses the inference server's step_id-aware queueing for additional ordering
+    - Keeps at most one policy update (args.gradient_accumulation_steps batches) ahead scheduled
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        tokenizer,
+        max_tokens: int,
+        temperature: float,
+        group_size: int,
+    ):
+        print("🧭 Initializing OneStepOffScheduler...")
+        self.base_url = base_url
+        self.tokenizer = tokenizer
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.group_size = group_size
+
+        self._worker = _AsyncLoopWorker()
+        self._session_future: Optional[concurrent.futures.Future] = None
+        self._session: Optional[aiohttp.ClientSession] = None
+
+        # Tracking scheduled futures and results by batch index
+        # batch_idx -> List[List[Future]] shaped [batch_size][group_size]
+        self._batch_futures: Dict[int, List[List[concurrent.futures.Future]]] = {}
+
+    async def _create_session(self):
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    def start(self):
+        if self._session_future is None:
+            print("🔌 Starting scheduler session...")
+            self._session_future = self._worker.submit(self._create_session())
+            # Ensure session exists before first use
+            self._session_future.result()
+            print("✅ Scheduler session ready")
+
+    async def _send_request_internal(
+        self,
+        prompt_text: str,
+        step_id: int,
+        request_id: str,
+    ):
+        # Reuse the shared session
+        assert self._session is not None, "Session not initialized"
+        return await send_single_request(
+            session=self._session,
+            base_url=self.base_url,
+            prompt=prompt_text,
+            tokenizer=self.tokenizer,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            request_id=request_id,
+            step_id=step_id,
+        )
+
+    def schedule_batch(
+        self,
+        batch_idx: int,
+        step_ids_for_batch: List[int],
+        prompts_text: List[str],
+    ) -> None:
+        """Schedule all rollouts for a training batch, serially per batch, async within batch.
+
+        Args:
+            batch_idx: 1-based batch index (training iteration number)
+            step_ids_for_batch: list of step_id (global prompt indices) of length batch_size
+            prompts_text: list of prompt strings aligned with step_ids
+        """
+        assert len(step_ids_for_batch) == len(prompts_text)
+        self.start()
+
+        total_requests = len(prompts_text) * self.group_size
+        print(
+            f"📦 Scheduling batch {batch_idx}: {len(prompts_text)} prompts × {self.group_size} group_size = {total_requests} requests"
+        )
+        print(f"   ↳ step_ids: {step_ids_for_batch}")
+
+        # Create futures grid [batch_size][group_size]
+        batch_futures: List[List[concurrent.futures.Future]] = []
+        for local_prompt_idx, (step_id, prompt_text) in enumerate(zip(step_ids_for_batch, prompts_text)):
+            prompt_futures: List[concurrent.futures.Future] = []
+            for group_copy in range(1, self.group_size + 1):
+                request_id = f"b{batch_idx}.s{step_id}.g{group_copy}.p{local_prompt_idx+1}"
+                preview = prompt_text[:80].replace("\n", " ") + ("..." if len(prompt_text) > 80 else "")
+                print(
+                    f"   🚀 Dispatch {request_id} | step_id={step_id} | prompt[{local_prompt_idx+1}]='{preview}'"
+                )
+                fut = self._worker.submit(
+                    self._send_request_internal(
+                        prompt_text=prompt_text,
+                        step_id=step_id,
+                        request_id=request_id,
+                    )
+                )
+                prompt_futures.append(fut)
+            batch_futures.append(prompt_futures)
+
+        # Register futures for this batch
+        self._batch_futures[batch_idx] = batch_futures
+        print(f"📝 Batch {batch_idx} scheduled with {total_requests} requests")
+
+    def await_batch_results(
+        self, batch_idx: int, end_token: Optional[str] = "</answer>"
+    ) -> Tuple[List[mx.array], List[str], List[mx.array], List[int], List[int]]:
+        """Wait for all results of a batch and collate into GRPO-ready outputs.
+
+        Returns:
+            all_completions, all_completion_texts, all_logprobs, batch_indices
+        """
+        if batch_idx not in self._batch_futures:
+            raise RuntimeError(f"Batch {batch_idx} has not been scheduled")
+
+        batch_futures = self._batch_futures.pop(batch_idx)
+        batch_size = len(batch_futures)
+        print(f"⏳ Awaiting results for batch {batch_idx} (batch_size={batch_size}, group_size={self.group_size})...")
+
+        # Collect results per local prompt (0..batch_size-1)
+        all_completions: List[mx.array] = []
+        all_completion_texts: List[str] = []
+        all_logprobs: List[mx.array] = []
+        all_policy_versions: List[int] = []
+        batch_indices: List[int] = []
+
+        for local_idx in range(batch_size):
+            futures_for_prompt = batch_futures[local_idx]
+            received = 0
+            for fut in futures_for_prompt:
+                result = fut.result()
+                completion_ids = result.get("completion_ids", []) or []
+                completion_text = result.get("text", "") or ""
+                logprobs = result.get("logprobs", []) or []
+                policy_version = result.get("policy_version", None)
+                received += 1
+
+                # Optionally strip end token if present
+                if end_token and completion_text:
+                    try:
+                        end_sequence = self.tokenizer.encode(end_token)
+                        if (
+                            len(completion_ids) >= len(end_sequence)
+                            and completion_ids[-len(end_sequence) :] == end_sequence
+                        ):
+                            completion_ids = completion_ids[: -len(end_sequence)]
+                            logprobs = logprobs[: -len(end_sequence)]
+                    except Exception:
+                        pass
+
+                all_completions.append(mx.array(completion_ids))
+                all_completion_texts.append(completion_text)
+                all_logprobs.append(mx.array(logprobs))
+                batch_indices.append(local_idx)
+                # Track policy_version if provided (default to -1 to indicate unknown)
+                all_policy_versions.append(int(policy_version) if policy_version is not None else -1)
+            print(
+                f"   ✅ Received {received}/{self.group_size} completions for local prompt {local_idx+1}"
+            )
+
+        print(
+            f"🏁 Batch {batch_idx} complete: total_completions={len(all_completions)}, prompts={batch_size}, group_size={self.group_size}"
+        )
+        return all_completions, all_completion_texts, all_logprobs, batch_indices, all_policy_versions
+
+    def close(self):
+        # Close aiohttp session inside loop
+        async def _close():
+            if self._session is not None:
+                await self._session.close()
+        try:
+            self._worker.submit(_close()).result(timeout=5)
+        except Exception:
+            pass
+        self._worker.stop()
+        print("🧹 Scheduler closed")
 
 async def send_single_request(
     session,
@@ -197,31 +420,8 @@ async def generate_async_batch(
     temperature: float,
     step_id: Optional[int] = None,
 ):
-    """Send batch requests to inference server in parallel and collect responses."""
-    print(f"\n📤 Sending batch of {len(prompts)} prompts to inference server...")
-    
-    # Create all requests as coroutines
-    tasks = []
-    for idx, prompt in enumerate(prompts):
-        request_id = f"grpo-{idx}-{step_id or 0}"
-        task = send_single_request(
-            session=session,
-            base_url=base_url,
-            prompt=prompt,
-            tokenizer=tokenizer,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            request_id=request_id,
-            step_id=step_id,
-        )
-        tasks.append(task)
-    
-    # Execute all requests in parallel
-    print(f"⏳ Waiting for all {len(tasks)} requests to complete...")
-    results = await asyncio.gather(*tasks)
-    print(f"✅ Batch complete! Received {len(results)} responses\n")
-    
-    return results
+    """Deprecated: generation is handled by OneStepOffScheduler."""
+    raise RuntimeError("generate_async_batch is deprecated. Use OneStepOffScheduler.")
 
 
 async def upload_adapter_weights(
@@ -291,118 +491,8 @@ async def upload_adapter_weights(
         raise
 
 
-def generate_grpo(
-    model: nn.Module,
-    tokenizer,
-    prompt_tokens,
-    max_tokens: int,
-    group_size: int,
-    temperature: float,
-    batch_size: int,
-    end_token: str = "</answer>",
-    inference_server_url: str = "http://10.0.0.180:8000",
-    step_id: Optional[int] = None
-):
-    model.eval()
-    all_completions = []
-    all_completion_texts = []
-    all_logprobs = []
-    batch_indices = []
-
-    total_samples = len(prompt_tokens)
-    print(f"\n🚀 Starting GRPO generation for {total_samples} prompts with group_size={group_size}")
-    print(f"   Server: {inference_server_url}")
-    print(f"   Max tokens per generation: {max_tokens}")
-    print(f"   Total requests to make: {total_samples * group_size}")
-
-    async def run_async_generation():
-        async with aiohttp.ClientSession() as session:
-            nonlocal all_completions, all_completion_texts, batch_indices
-            
-            for i in range(0, total_samples, batch_size):
-                current_batch_size = min(batch_size, total_samples - i)
-                batch_prompts = prompt_tokens[i : i + current_batch_size]
-                
-                print(f"\n📦 Processing batch {i//batch_size + 1}: prompts {i} to {i + current_batch_size - 1}")
-                
-                # Collect all prompts for this batch
-                batch_requests = []
-                for j, prompt in enumerate(batch_prompts):
-                    for k in range(group_size):
-                        prompt_text = tokenizer.decode(prompt)
-                        batch_requests.append((prompt_text, i + j))
-                
-                # Extract prompts and indices
-                prompts_to_send = [req[0] for req in batch_requests]
-                prompt_indices = [req[1] for req in batch_requests]
-                
-                print(f"   Batch contains {len(prompts_to_send)} total requests ({current_batch_size} prompts × {group_size} group_size)")
-                
-                # Send batch to inference server - ALL IN PARALLEL!
-                results = await generate_async_batch(
-                    session=session,
-                    base_url=inference_server_url,
-                    prompts=prompts_to_send,
-                    tokenizer=tokenizer,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    step_id=step_id,
-                )
-                
-                # Process results
-                successful_results = 0
-                token_counts = []
-                for result, prompt_idx in zip(results, prompt_indices):
-                    try:
-                        completion_ids = result.get("completion_ids", [])
-                        completion_text = result.get("text", "")
-                        logprobs = result.get("logprobs", [])
-                        
-                        if completion_ids:
-                            successful_results += 1
-                            token_counts.append(len(completion_ids))
-                        
-                        if end_token and completion_text:
-                            # Remove end token if present
-                            end_sequence = tokenizer.encode(end_token)
-                            if len(completion_ids) >= len(end_sequence) and completion_ids[-len(end_sequence):] == end_sequence:
-                                completion_ids = completion_ids[:-len(end_sequence)]
-
-                                # also remove the logprobs for the end token
-                                logprobs = logprobs[:-len(end_sequence)]
-
-                                
-                        
-                        completion_ids = mx.array(completion_ids)
-                        all_completions.append(mx.stop_gradient(completion_ids))
-                        all_completion_texts.append(completion_text)
-                        all_logprobs.append(mx.array(logprobs))
-                        batch_indices.append(prompt_idx)
-                        
-                    except Exception as e:
-                        print(f"⚠️ Error processing result: {e}")
-                        # Handle error by adding empty completion
-                        all_completions.append(mx.array([]))
-                        all_completion_texts.append("")
-                        all_logprobs.append(mx.array([]))
-                        batch_indices.append(prompt_idx)
-                
-                if token_counts:
-                    avg_tokens = sum(token_counts) / len(token_counts)
-                    min_tokens = min(token_counts)
-                    max_tokens_generated = max(token_counts)
-                    print(f"   ✅ Batch processed: {successful_results}/{len(results)} successful")
-                    print(f"      Token stats: min={min_tokens}, max={max_tokens_generated}, avg={avg_tokens:.1f}")
-                else:
-                    print(f"   ✅ Batch processed: {successful_results}/{len(results)} successful completions")
-    
-    # Run async generation
-    asyncio.run(run_async_generation())
-    
-    print(f"\n🎉 GRPO generation complete! Generated {len(all_completions)} completions total")
-    
-    mx.clear_cache()
-    return all_completions, all_completion_texts, all_logprobs, batch_indices
+def generate_grpo(*args, **kwargs):
+    raise RuntimeError("generate_grpo has been removed. Use OneStepOffScheduler for generation.")
 
 
 def grpo_loss(
@@ -420,33 +510,65 @@ def grpo_loss(
     epsilon: float = 1e-4,
     epsilon_high: float = None,
     max_tokens: int = 64,
-    temperature: float = 0.8,
     reward_weights: Optional[List[float]] = None,
-    batch_size: int = 1,
     importance_sampling_level: str = "token",
     grpo_loss_type: str = "grpo",
+    policy_versions: Optional[List[int]] = None,
+    current_policy_version: Optional[int] = None,
+    allowed_policy_lag: int = 1,
 ):
     prompt_tokens, _, prompt_text, answer_text, type_info = batch
 
-    if (
+    if not (
         completions is not None
         and completion_texts is not None
         and batch_indices is not None
+        and completion_logprobs is not None
     ):
-        all_completions = completions
-        all_completion_texts = completion_texts
-        all_logprobs = completion_logprobs if completion_logprobs is not None else []
-        batch_indices = batch_indices
-    else:
-        all_completions, all_completion_texts, all_logprobs, batch_indices = generate_grpo(
-            model=model,
-            tokenizer=tokenizer,
-            prompt_tokens=prompt_tokens,
-            max_tokens=max_tokens,
-            group_size=group_size,
-            temperature=temperature,
-            batch_size=batch_size,
-        )
+        raise ValueError("grpo_loss requires pre-generated completions and logprobs; none were provided.")
+    all_completions = completions
+    all_completion_texts = completion_texts
+    all_logprobs = completion_logprobs if completion_logprobs is not None else []
+    batch_indices = batch_indices
+
+    # Filter out stale policy samples if we have versions and a current policy version
+    if current_policy_version is not None and policy_versions is not None and len(policy_versions) == len(all_completions):
+        keep_mask = []
+        min_allowed_version = int(current_policy_version) - int(allowed_policy_lag)
+        for pv in policy_versions:
+            if pv is None or int(pv) == -1:
+                # Unknown policy version: keep but could log if needed
+                keep_mask.append(True)
+            else:
+                keep_mask.append(int(pv) >= min_allowed_version)
+
+        # Apply filtering
+        if not any(keep_mask):
+            raise RuntimeError(
+                f"All rollouts filtered as stale (server policy < {min_allowed_version})."
+            )
+
+        filtered_completions = []
+        filtered_texts = []
+        filtered_logprobs = [] if all_logprobs is not None else None
+        filtered_batch_indices = []
+        for keep, comp, text, lp, bidx in zip(keep_mask, all_completions, all_completion_texts, all_logprobs or [], batch_indices):
+            if keep:
+                filtered_completions.append(comp)
+                filtered_texts.append(text)
+                if all_logprobs is not None:
+                    filtered_logprobs.append(lp)
+                filtered_batch_indices.append(bidx)
+
+        # If logprobs were None originally, keep them as [] with same length
+        if all_logprobs is None or len(all_logprobs) == 0:
+            # Rebuild with empty arrays aligned to kept samples
+            filtered_logprobs = []
+
+        all_completions = filtered_completions
+        all_completion_texts = filtered_texts
+        all_logprobs = filtered_logprobs
+        batch_indices = filtered_batch_indices
 
     if not all_completions:
         raise ValueError(
@@ -645,6 +767,7 @@ def grpo_loss(
     length_mask = mx.arange(inputs.shape[1] - 1)[None, :] < (lengths[:, None] - 1)
 
     # Compute log ratio for importance sampling
+    # THIS IS INCORRECT, always comparing to ref policy rather than policy that generated the tokens
     log_ratio = token_log_probs - mx.stop_gradient(ref_token_log_probs)
 
     # Apply importance sampling based on level
@@ -834,6 +957,9 @@ def evaluate_grpo(
     iterate_batches: callable = iterate_grpo_batches,
     grpo_loss_type: str = "grpo",
     importance_sampling_level: str = "token",
+    scheduler: Optional[OneStepOffScheduler] = None,
+    current_policy_version: Optional[int] = None,
+    allowed_policy_lag: int = 1,
 ):
     all_losses = 0
     ntokens = 0
@@ -841,7 +967,13 @@ def evaluate_grpo(
 
     index_iterator = iter(range(num_batches)) if num_batches != -1 else iter(int, 1)
 
-    for _, batch in zip(
+    if scheduler is None:
+        raise ValueError("evaluate_grpo requires a scheduler; pass the trainer's scheduler.")
+
+    # Use negative batch indices for validation to avoid collisions
+    next_val_batch_idx = -1
+
+    for eval_step_idx, batch in zip(
         index_iterator,
         iterate_batches(
             dataset=dataset,
@@ -849,20 +981,46 @@ def evaluate_grpo(
             max_seq_length=max_seq_length,
         ),
     ):
+        prompts_tokens, answers_tokens, prompts_text, answers_text, types = batch
+
+        # Schedule validation completions with step_id = -1
+        batch_idx = next_val_batch_idx
+        next_val_batch_idx -= 1
+        step_ids = [-1] * len(prompts_text)
+        scheduler.schedule_batch(
+            batch_idx=batch_idx,
+            step_ids_for_batch=step_ids,
+            prompts_text=prompts_text,
+        )
+
+        (
+            all_completions,
+            all_completion_texts,
+            all_logprobs,
+            batch_indices,
+            policy_versions,
+        ) = scheduler.await_batch_results(batch_idx=batch_idx)
+
         losses, toks, metrics = loss_fn(
             model=model,
             tokenizer=tokenizer,
             batch=batch,
+            completions=all_completions,
+            completion_texts=all_completion_texts,
+            completion_logprobs=all_logprobs,
+            batch_indices=batch_indices,
+            policy_versions=policy_versions,
+            current_policy_version=current_policy_version,
             reward_funcs=reward_funcs,
             beta=beta,
             group_size=group_size,
             epsilon=epsilon,
             epsilon_high=epsilon_high,
             ref_model=ref_model,
-            temperature=temperature,
             max_tokens=max_tokens,
             importance_sampling_level=importance_sampling_level,
             grpo_loss_type=grpo_loss_type,
+            allowed_policy_lag=allowed_policy_lag,
         )
 
         all_losses += losses * toks
@@ -965,17 +1123,14 @@ def train_grpo(
         nonlocal current_policy_version
         prompt_tokens, targets, prompt_lens, target_lens, type_info = batch
 
-        all_completions, all_completion_texts, all_logprobs, batch_indices = generate_grpo(
-            model=model,
-            tokenizer=tokenizer,
-            prompt_tokens=prompt_tokens,
-            max_tokens=args.max_completion_length,
-            group_size=args.group_size,
-            temperature=args.temperature,
-            batch_size=args.batch_size,
-            inference_server_url=args.inference_server_url,
-            step_id=it,  # Pass current iteration as step_id
-        )
+        # Results should have been pre-scheduled; await them now
+        (
+            all_completions,
+            all_completion_texts,
+            all_logprobs,
+            batch_indices,
+            policy_versions,
+        ) = scheduler.await_batch_results(batch_idx=it)
 
         mx.clear_cache()
 
@@ -987,6 +1142,8 @@ def train_grpo(
             completion_texts=all_completion_texts,
             completion_logprobs=all_logprobs,
             batch_indices=batch_indices,
+            policy_versions=policy_versions,
+            current_policy_version=current_policy_version,
             reward_funcs=reward_funcs,
             beta=args.beta,
             group_size=args.group_size,
@@ -996,6 +1153,7 @@ def train_grpo(
             grpo_loss_type=args.grpo_loss_type,
             max_tokens=args.max_completion_length,
             importance_sampling_level=args.importance_sampling_level,
+            allowed_policy_lag=allowed_policy_lag,
         )
 
         if (it + 1) % args.gradient_accumulation_steps == 0:
@@ -1052,16 +1210,88 @@ def train_grpo(
         accumulated_metrics[f"{func_name}_std"] = 0
         accumulated_metrics[f"{func_name}_coverage"] = 0
 
+    # Local policy lag configuration (how many policy updates ahead scheduling can be)
+    allowed_policy_lag = 1
+
+    # Set up scheduler and prefetch window
+    scheduler = OneStepOffScheduler(
+        base_url=args.inference_server_url,
+        tokenizer=tokenizer,
+        max_tokens=args.max_completion_length,
+        temperature=args.temperature,
+        group_size=args.group_size,
+    )
+    train_iter = iterate_batches(
+        dataset=train_dataset,
+        batch_size=args.batch_size,
+        max_seq_length=args.max_seq_length,
+        train=True,
+    )
+
+    # Store prefetched batches: batch_idx -> (prompt_tokens, targets, prompt_lens, target_lens, type_info, prompts_text)
+    prefetched_batches: Dict[int, Tuple] = {}
+
+    def allowed_max_batch(current_batch_idx: int) -> int:
+        gas = args.gradient_accumulation_steps
+        update_idx = (max(current_batch_idx, 1) - 1) // gas
+        # Current accumulation block + allowed ahead updates
+        return (update_idx + 1 + allowed_policy_lag) * gas
+
+    last_scheduled_batch = 0
+
+    # Global prompt counter for informational step_ids
+    global_prompt_counter = 1  # 1-based prompt (step) numbering across all batches
+
+    # Prefill initial window for batch indices starting at 1
+    target_prefill = min(args.iters, allowed_max_batch(1))
+    print(
+        f"🪄 Prefilling scheduler window: batches 1..{target_prefill} (gas={args.gradient_accumulation_steps}, lag={allowed_policy_lag})"
+    )
+    while last_scheduled_batch < target_prefill:
+        batch_idx = last_scheduled_batch + 1
+        batch = next(train_iter)
+        # Unpack for storage and scheduling
+        prompts_tokens, answers_tokens, prompts_text, answers_text, types = batch
+        prefetched_batches[batch_idx] = (
+            prompts_tokens,
+            answers_tokens,
+            prompts_text,
+            answers_text,
+            types,
+        )
+
+        # Compute step_ids for this batch (one per prompt in batch)
+        step_ids = list(range(global_prompt_counter, global_prompt_counter + args.batch_size))
+        global_prompt_counter += args.batch_size
+
+        # Serially schedule this batch; async within batch
+        scheduler.schedule_batch(
+            batch_idx=batch_idx,
+            step_ids_for_batch=step_ids,
+            prompts_text=prompts_text,
+        )
+        last_scheduled_batch = batch_idx
+    print(f"✅ Prefill complete. Last scheduled batch: {last_scheduled_batch}")
+
     start = time.perf_counter()
     pbar = tqdm(range(1, args.iters + 1), desc="Training", disable=rank != 0)
     for it in pbar:
-        batch = next(iterate_batches(
-            dataset=train_dataset,
-            batch_size=args.batch_size,
-            max_seq_length=args.max_seq_length,
-            train=True,
-        ))
+        # Get the already prefetched batch for this iteration
+        if it not in prefetched_batches:
+            raise RuntimeError(f"Missing prefetched batch {it}")
+        batch_tuple = prefetched_batches.pop(it)
+        # Repackage into the expected shape for loss
+        prompts_tokens, answers_tokens, prompts_text, answers_text, types = batch_tuple
+        batch = (
+            prompts_tokens,
+            answers_tokens,
+            prompts_text,
+            answers_text,
+            types,
+        )
+        print(f"🎯 Iter {it}: awaiting completions from scheduler")
 
+        # Validation is independent of the one-step-off pipeline; run when scheduled
         if it == 1 or it % args.steps_per_eval == 0 or it == args.iters:
             stop = time.perf_counter()
             val_loss, val_ntokens, val_metrics = evaluate_grpo(
@@ -1082,6 +1312,9 @@ def train_grpo(
                 temperature=args.temperature,
                 iterate_batches=iterate_batches,
                 grpo_loss_type=args.grpo_loss_type,
+                scheduler=scheduler,
+                current_policy_version=current_policy_version,
+                allowed_policy_lag=allowed_policy_lag,
             )
             val_time = time.perf_counter() - stop
             if rank == 0:
@@ -1165,6 +1398,38 @@ def train_grpo(
             accumulated_metrics = {k: 0 for k in accumulated_metrics}
             start = time.perf_counter()
 
+        # After potential policy update, extend scheduling window
+        # Maintain the window based on current iteration and allowed policy lag
+        next_limit = min(
+            args.iters,
+            ((it - 1) // args.gradient_accumulation_steps + 1 + allowed_policy_lag) * args.gradient_accumulation_steps,
+        )
+        if last_scheduled_batch < next_limit:
+            print(
+                f"🧮 Extending schedule window after iter {it}: scheduling batches {last_scheduled_batch+1}..{next_limit}"
+            )
+        while last_scheduled_batch < next_limit:
+            batch_idx = last_scheduled_batch + 1
+            batch_next = next(train_iter)
+            prompts_tokens, answers_tokens, prompts_text, answers_text, types = batch_next
+            prefetched_batches[batch_idx] = (
+                prompts_tokens,
+                answers_tokens,
+                prompts_text,
+                answers_text,
+                types,
+            )
+            step_ids = list(range(global_prompt_counter, global_prompt_counter + args.batch_size))
+            global_prompt_counter += args.batch_size
+            scheduler.schedule_batch(
+                batch_idx=batch_idx,
+                step_ids_for_batch=step_ids,
+                prompts_text=prompts_text,
+            )
+            last_scheduled_batch = batch_idx
+        if last_scheduled_batch >= next_limit:
+            print(f"📈 Scheduling up-to-date. Last scheduled batch: {last_scheduled_batch}")
+
         if it % args.steps_per_save == 0:
             adapter_weights = dict(tree_flatten(model.trainable_parameters()))
             mx.save_safetensors(str(args.adapter_file), adapter_weights)
@@ -1177,6 +1442,10 @@ def train_grpo(
                 f"Iter {it}: Saved adapter weights to "
                 f"{args.adapter_file} and {checkpoint}."
             )
+
+    # Cleanup scheduler
+    if scheduler is not None:
+        scheduler.close()
 
     adapter_weights = dict(tree_flatten(model.trainable_parameters()))
     mx.save_safetensors(str(args.adapter_file), adapter_weights)

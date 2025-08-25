@@ -5,6 +5,7 @@
 #!pip install mlx-lm-lora mlx-lm datasets
 # Configure WandB - paste your API key when prompted
 import wandb
+import os
 
 # Set your WandB API key here
 WANDB_API_KEY = os.getenv("WANDB_API_KEY")  # <-- Replace with your actual WandB API key
@@ -43,12 +44,12 @@ import os
 # %%
 hf_token = os.getenv("HF_TOKEN") # <-- Add you HF Token here
 
-model_name = "/Users/eligottlieb/.lmstudio/models/lmstudio-community/Qwen2.5-7B-Instruct-MLX-4bit"
+model_name = "/Users/eligottlieb/.lmstudio/models/lmstudio-community/Qwen3-0.6B-MLX-bf16"
 user_name = "mlx-community"
 
 adapter_path = "/Users/eligottlieb/Documents/mlx-lm-lora/examples/tests"
 new_model_name = "new_model"
-max_seq_length = 1028
+max_seq_length = 512
 num_layers = 12
 lora_parameters = {"rank": 16, "dropout": 0.0, "scale": 10.0}
 
@@ -98,7 +99,7 @@ opt = optim.AdamW(learning_rate=1e-5)
 # # Load and Preprocess your Dataset using your custom Prompt Format
 
 # %%
-system_prompt = """You are an expert in ethical thinking. You are given a ethical question and you need to think about it and answer it.
+system_prompt = """You are an expert in ethical thinking. You are given a ethical question and you need to think about it and answer it. You must really think hard, constantly refining and questioning your answer.
 You respond in the following format:
 <thinking>
 ...
@@ -157,11 +158,10 @@ def get_prompt_content(prompt):
 from mlx_lm_lora.trainer.grpo_reward_functions import register_reward_function, list_available_reward_functions
 # Register the reward function
 @register_reward_function()
-
 # counts the number of times the word "yes" appears in the response
 def answer_contains_yes(prompts, completions, answer, **kwargs) -> list[float]:
     responses = [get_completion_content(completion) for completion in completions]
-    yes_count = [r.count("yes") for r in responses]
+    yes_count = [r.count("wait") for r in responses]
     return yes_count
 
 print("Available reward functions:", list_available_reward_functions())
@@ -266,7 +266,7 @@ train_grpo(
         batch_size=1,
         iters=5000,
         val_batches=1,
-        steps_per_report=1, #20,
+        steps_per_report=10, #20,
         steps_per_eval=50, # 50,
         steps_per_save=100, # 50,
         adapter_file=adapter_file,
@@ -274,11 +274,13 @@ train_grpo(
         grad_checkpoint=True,
         gradient_accumulation_steps=5,
         beta=0.9,
-        group_size=3,
+        group_size=5,
         epsilon=1e-4,
         epsilon_high=None,
-        max_completion_length=1028,
-        reward_weights=custom_reward_weights,  # Use this instead of reward_scaling
+        max_completion_length=512,
+        reward_weights=custom_reward_weights, 
+        upload_adapters_to_server=True, # Use this instead of reward_scaling
+        inference_server_url="http://127.0.0.1:8000"
     ),
     reward_funcs=custom_reward_functions,  # Pass the custom reward functions
     training_callback=wandb_callback  # Pass the WandB callback here

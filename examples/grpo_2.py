@@ -107,7 +107,6 @@ You Respond in the following format:
 ...
 </answer>"""
 
-XML_COT_FORMAT = """<josie_thinks> {reasoning} </josie_thinks> <josie_answers> {answer} </josie_answers>"""
 
 def extract_xml_answer(text: str) -> str:
     answer = text.split("<josie_answers>")[-1]
@@ -380,7 +379,7 @@ train_grpo(
     val_dataset=CacheDataset(valid_set),
     args=GRPOTrainingArgs(
         batch_size=1,
-        iters=200,
+        iters=2000,
         val_batches=1,
         steps_per_report=10, #20,
         steps_per_eval=50, # 50,
@@ -388,7 +387,7 @@ train_grpo(
         adapter_file=adapter_file,
         max_seq_length=max_seq_length,
         grad_checkpoint=True,
-        gradient_accumulation_steps=5,
+        gradient_accumulation_steps=4,
         beta=0.9,
         group_size=5,
         epsilon=1e-4,
@@ -396,8 +395,8 @@ train_grpo(
         max_completion_length=512,
         reward_weights=custom_reward_weights,  # Use this instead of reward_scaling
         # Uncomment these lines to enable inference server integration:
-        # upload_adapters_to_server=True,
-        # inference_server_url="http://10.0.0.180:8000",
+        upload_adapters_to_server=True,
+        inference_server_url="http://127.0.0.1:8000",
     ),
     reward_funcs=custom_reward_functions,  # Pass the custom reward functions
     training_callback=wandb_callback  # Pass the WandB callback here
