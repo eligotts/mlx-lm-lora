@@ -20,7 +20,7 @@ from mlx_optimizers import QHAdam
 from .trainer.grpo_reward_functions import get_reward_function, get_default_reward_functions, list_available_reward_functions
 from .trainer.online_dpo_trainer import  OnlineDPOTrainingArgs, evaluate_online_dpo, train_online_dpo
 from .trainer.sft_trainer import SFTTrainingArgs, TrainingCallback, evaluate_sft, train_sft
-from .trainer.grpo_trainer import GRPOTrainingArgs, evaluate_grpo, train_grpo
+from .trainer.grpo_trainer import GRPOTrainingArgs, evaluate_grpo, train_grpo, OneStepOffScheduler
 from .trainer.orpo_trainer import ORPOTrainingArgs, evaluate_orpo, train_orpo
 from .trainer.rflhf_trainer import RLHFTrainingArgs, evaluate_rlhf, train_rlhf
 from .trainer.xpo_trainer import  XPOTrainingArgs, evaluate_xpo, train_xpo
@@ -940,6 +940,15 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
         else:
             reference_model = model
 
+        # For standalone GRPO evaluation, create a temporary scheduler
+        _eval_scheduler = OneStepOffScheduler(
+            base_url=args.inference_server_url if hasattr(args, 'inference_server_url') else "http://127.0.0.1:8000",
+            tokenizer=tokenizer,
+            max_tokens=args.max_completion_length if hasattr(args, 'max_completion_length') else args.max_seq_length,
+            temperature=args.temperature,
+            group_size=args.group_size,
+        )
+
         test_loss, _, test_rewards = evaluate_grpo(
             model=model,
             ref_model=reference_model.freeze(),
@@ -953,7 +962,8 @@ def evaluate_model(args, model: nn.Module, tokenizer, test_set):
             epsilon=args.epsilon,
             epsilon_high=args.epsilon_high,
             temperature=args.temperature,
-            max_tokens=args.max_seq_length,
+            max_tokens=args.max_completion_length if hasattr(args, 'max_completion_length') else args.max_seq_length,
+            scheduler=_eval_scheduler,
         )
 
         test_ppl = math.exp(test_loss)
